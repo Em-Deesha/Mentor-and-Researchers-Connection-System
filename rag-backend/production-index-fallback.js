@@ -75,7 +75,7 @@ const corsOptions = {
 // Custom CORS middleware for explicit headers
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (origin.includes('localhost:3004') || origin.includes('localhost:3001'))) {
+  if (origin && (origin.includes('localhost:3004') || origin.includes('localhost:3001') || origin.includes('localhost:3000'))) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Credentials', 'true');

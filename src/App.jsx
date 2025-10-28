@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion } from 'firebase/firestore';
-import { User, GraduationCap, Globe, BookOpen, Send, Loader2, LogOut, CheckCheck, MessageSquare, Heart, Edit2, Clock, Search, Zap, XCircle } from 'lucide-react';
+import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion, getDocs, deleteDoc } from 'firebase/firestore';
+import { User, GraduationCap, Globe, BookOpen, Send, Loader2, LogOut, CheckCheck, MessageSquare, Heart, Edit2, Clock, Search, Zap, XCircle, Bell, BellRing, Users, ArrowLeft } from 'lucide-react';
 
 // --- Import Firebase Configuration ---
 import { firebaseConfig, appId } from './firebase-config.js';
@@ -428,7 +428,7 @@ const PostsFeed = ({ db, isAuthReady, userId }) => {
 
 
 // --- Chat Window Component (Real Firestore) ---
-const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
+const ChatWindow = ({ db, currentUserId, partner, onEndChat, onSendNotification }) => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [chatId, setChatId] = useState(null);
@@ -442,34 +442,46 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
 
   // 1. Find or Create Chat Document (Real Firestore)
   useEffect(() => {
-    if (!db || !currentUserId || !partner.userId) return;
+    if (!db || !currentUserId || !partner.userId) {
+      console.log('🚫 ChatWindow: Missing required data:', { db: !!db, currentUserId, partnerUserId: partner?.userId });
+      return;
+    }
 
+    console.log('🚀 ChatWindow: Starting chat setup for:', partner);
     setIsLoading(true);
     // Participants array is sorted alphabetically to create a canonical chat ID
     const participants = [currentUserId, partner.userId].sort();
+    const chatId = participants.join('_');
     
-    const chatsCollectionRef = collection(db, `artifacts/${appId}/public/data/chats`);
-    
-    // Query to find existing chat
-    const chatQuery = query(chatsCollectionRef, where('participants', '==', participants));
+    console.log('🔍 ChatWindow: Looking for chat with ID:', chatId);
+    console.log('🔍 ChatWindow: Chat path:', `artifacts/${appId}/public/data/chats/${chatId}`);
+    const chatRef = doc(db, `artifacts/${appId}/public/data/chats`, chatId);
 
-    const unsubscribe = onSnapshot(chatQuery, async (snapshot) => {
-      let currentChatId = null;
-      if (snapshot.empty) {
+    const unsubscribe = onSnapshot(chatRef, async (doc) => {
+      if (doc.exists()) {
+        console.log('✅ Found existing chat:', chatId);
+        setChatId(chatId);
+        setIsLoading(false);
+      } else {
         // Chat does not exist, create it
-        const newChatDoc = await addDoc(chatsCollectionRef, {
+        try {
+          await setDoc(chatRef, {
           participants: participants,
           createdAt: serverTimestamp(),
-        });
-        currentChatId = newChatDoc.id;
-      } else {
-        // Chat exists
-        currentChatId = snapshot.docs[0].id;
-      }
-      setChatId(currentChatId);
+            lastMessage: '',
+            lastMessageTime: serverTimestamp(),
+            lastMessageSender: ''
+          });
+          console.log('✅ Created new chat:', chatId);
+          setChatId(chatId);
       setIsLoading(false);
+        } catch (error) {
+          console.error('Error creating chat:', error);
+          setIsLoading(false);
+        }
+      }
     }, (error) => {
-      console.error("Error finding/creating chat:", error);
+      console.error('Error fetching chat:', error);
       setIsLoading(false);
     });
 
@@ -478,12 +490,18 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
 
   // 2. Listen for Messages (Real Firestore)
   useEffect(() => {
-    if (!db || !chatId) return;
+    if (!db || !chatId) {
+      console.log('🚫 Messages: Missing required data:', { db: !!db, chatId });
+      return;
+    }
 
+    console.log('📨 Messages: Listening for messages in chat:', chatId);
     const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`);
+    console.log('📨 Messages collection path:', `artifacts/${appId}/public/data/chats/${chatId}/messages`);
     const messagesQuery = query(messagesCollectionRef); 
 
     const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+      console.log('📨 Messages: Received snapshot with', snapshot.docs.length, 'messages');
       const fetchedMessages = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
@@ -496,11 +514,12 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
         return a.timestamp.toMillis() - b.timestamp.toMillis();
       });
 
+      console.log('📨 Messages: Processed messages:', fetchedMessages);
       setMessages(fetchedMessages);
       // Wait for messages to load, then scroll
       setTimeout(scrollToBottom, 100); 
     }, (error) => {
-      console.error("Error fetching messages:", error);
+      console.error("📨 Messages: Error fetching messages:", error);
     });
 
     return () => unsubscribe();
@@ -509,16 +528,63 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
   // 3. Send Message Handler (Real Firestore)
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (newMessage.trim() === '' || !chatId) return;
+    if (newMessage.trim() === '' || !chatId) {
+      console.log('🚫 Cannot send message:', { newMessage: newMessage.trim(), chatId });
+      return;
+    }
+
+    console.log('📤 Sending message:', {
+      text: newMessage,
+      senderId: currentUserId,
+      chatId: chatId,
+      partner: partner
+    });
 
     const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`);
+    console.log('📤 Messages collection path:', `artifacts/${appId}/public/data/chats/${chatId}/messages`);
     
     try {
-      await addDoc(messagesCollectionRef, {
+      // Send the message
+      const messageDoc = await addDoc(messagesCollectionRef, {
         senderId: currentUserId,
         text: newMessage,
         timestamp: serverTimestamp(),
       });
+      
+      console.log('✅ Message sent successfully:', messageDoc.id);
+
+      // Update chat with last message info
+      const chatRef = doc(db, `artifacts/${appId}/public/data/chats`, chatId);
+      await setDoc(chatRef, {
+        lastMessage: newMessage,
+        lastMessageTime: serverTimestamp(),
+        lastMessageSender: currentUserId
+      }, { merge: true });
+
+      // Create notification for the recipient
+      if (onSendNotification && partner.userId) {
+        // Get current user's name from profile data
+        const currentUserName = profileData?.name || 'Someone';
+        
+        console.log('📨 Creating notification for:', {
+          recipientId: partner.userId,
+          senderId: currentUserId,
+          senderName: currentUserName,
+          message: newMessage
+        });
+        
+        await onSendNotification({
+          recipientId: partner.userId,
+          senderId: currentUserId,
+          senderName: currentUserName,
+          type: 'message',
+          title: 'New Message',
+          message: `${currentUserName} sent you a message: "${newMessage}"`,
+          chatId: chatId,
+          timestamp: serverTimestamp()
+        });
+      }
+
       setNewMessage('');
     } catch (error) {
       console.error("Error sending message:", error);
@@ -549,7 +615,17 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
 
       {/* Message Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-        {messages.map((msg, index) => (
+        {messages.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-gray-500">
+            <div className="text-center">
+              <p className="text-lg">No messages yet</p>
+              <p className="text-sm">Start the conversation!</p>
+            </div>
+          </div>
+        ) : (
+          messages.map((msg, index) => {
+            console.log('📨 Rendering message:', msg);
+            return (
           <div key={index} className={`flex ${msg.senderId === currentUserId ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-xs sm:max-w-md px-4 py-2 rounded-xl shadow-md text-sm ${
               msg.senderId === currentUserId 
@@ -558,11 +634,17 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
             }`}>
               <p>{msg.text}</p>
               <span className="text-xs opacity-70 mt-1 block">
-                {msg.timestamp ? new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '...'}
+                    {msg.timestamp ? 
+                      (msg.timestamp.toDate ? 
+                        msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) :
+                        new Date(msg.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      ) : 'Just now'}
               </span>
             </div>
           </div>
-        ))}
+            );
+          })
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -584,20 +666,1200 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
           >
             <Send className="w-5 h-5" />
           </button>
+          <button
+            type="button"
+            onClick={async () => {
+              console.log('🧪 Test button clicked');
+              console.log('Current state:', { chatId, currentUserId, partner, messages: messages.length });
+              console.log('Messages array:', messages);
+              
+              // Manually check messages in database
+              if (chatId && db) {
+                try {
+                  const messagesRef = collection(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`);
+                  const snapshot = await getDocs(messagesRef);
+                  console.log('🔍 Manual query result:', {
+                    path: `artifacts/${appId}/public/data/chats/${chatId}/messages`,
+                    docCount: snapshot.docs.length,
+                    docs: snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }))
+                  });
+                } catch (error) {
+                  console.error('❌ Manual query error:', error);
+                }
+              }
+            }}
+            className="px-3 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
+            title="Debug Info"
+          >
+            🧪
+          </button>
         </div>
       </form>
     </div>
   );
 };
 
+// --- Chat List Component ---
+const ChatList = ({ db, currentUserId, onSelectChat, onBack }) => {
+  const [chats, setChats] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [userProfiles, setUserProfiles] = useState({});
+  const [profilesLoading, setProfilesLoading] = useState(false);
+
+  // Fetch user profiles for chat participants
+  useEffect(() => {
+    if (!db || !currentUserId || chats.length === 0) return;
+
+    const fetchUserProfiles = async (userIds) => {
+      console.log('🔍 Fetching profiles for user IDs:', userIds);
+      setProfilesLoading(true);
+      const profiles = {};
+      
+      for (const userId of userIds) {
+        if (userId === currentUserId) continue;
+        
+        try {
+          // Try professors collection first
+          const professorRef = doc(db, `artifacts/${appId}/public/data/professors`, userId);
+          const professorSnap = await getDoc(professorRef);
+          
+          if (professorSnap.exists()) {
+            const data = professorSnap.data();
+            profiles[userId] = { ...data, userId, userType: 'professor' };
+            console.log(`✅ Found professor profile for ${userId}:`, data.name);
+            continue;
+          }
+          
+          // Try students collection
+          const studentRef = doc(db, `artifacts/${appId}/public/data/students`, userId);
+          const studentSnap = await getDoc(studentRef);
+          
+          if (studentSnap.exists()) {
+            const data = studentSnap.data();
+            profiles[userId] = { ...data, userId, userType: 'student' };
+            console.log(`✅ Found student profile for ${userId}:`, data.name);
+            continue;
+          }
+          
+          // Fallback to users collection
+          const userRef = doc(db, `artifacts/${appId}/public/data/users`, userId);
+          const userSnap = await getDoc(userRef);
+          
+          if (userSnap.exists()) {
+            const data = userSnap.data();
+            profiles[userId] = { ...data, userId };
+            console.log(`✅ Found user profile for ${userId}:`, data.name);
+          } else {
+            console.log(`❌ No profile found for ${userId} in any collection`);
+          }
+        } catch (error) {
+          console.error(`Error fetching profile for ${userId}:`, error);
+        }
+      }
+      
+      console.log('📊 Final profiles:', profiles);
+      setUserProfiles(profiles);
+      setProfilesLoading(false);
+    };
+
+    // Get all unique user IDs from chats
+    const allUserIds = new Set();
+    chats.forEach(chat => {
+      console.log('📝 Chat participants:', chat.participants);
+      chat.participants.forEach(participant => allUserIds.add(participant));
+    });
+    
+    console.log('👥 All unique user IDs:', Array.from(allUserIds));
+    
+    if (allUserIds.size > 0) {
+      fetchUserProfiles(Array.from(allUserIds));
+    }
+  }, [db, currentUserId, chats]);
+
+  // Listen for user's chats
+  useEffect(() => {
+    if (!db || !currentUserId) return;
+
+    setIsLoading(true);
+    
+    const chatsCollectionRef = collection(db, `artifacts/${appId}/public/data/chats`);
+    const userChatsQuery = query(chatsCollectionRef, where('participants', 'array-contains', currentUserId));
+
+    const unsubscribe = onSnapshot(userChatsQuery, (snapshot) => {
+      const userChats = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      console.log('💬 Loaded chats:', userChats.length);
+      userChats.forEach(chat => {
+        console.log(`📝 Chat ${chat.id}:`, {
+          participants: chat.participants,
+          lastMessage: chat.lastMessage,
+          lastMessageTime: chat.lastMessageTime
+        });
+      });
+
+      // Sort chats by last message timestamp
+      userChats.sort((a, b) => {
+        const aTime = a.lastMessageTime?.toMillis() || a.createdAt?.toMillis() || 0;
+        const bTime = b.lastMessageTime?.toMillis() || b.createdAt?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setChats(userChats);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Error fetching chats:", error);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [db, currentUserId]);
+
+  // Get the other participant in a chat
+  const getOtherParticipant = (chat) => {
+    return chat.participants.find(participant => participant !== currentUserId);
+  };
+
+  // Format last message time
+  const formatLastMessageTime = (timestamp) => {
+    if (!timestamp) return '';
+    
+    const now = new Date();
+    const messageTime = timestamp.toDate();
+    const diffInHours = (now - messageTime) / (1000 * 60 * 60);
+    
+    if (diffInHours < 1) {
+      return 'Just now';
+    } else if (diffInHours < 24) {
+      return `${Math.floor(diffInHours)}h ago`;
+    } else {
+      return messageTime.toLocaleDateString();
+    }
+  };
+
+  if (isLoading || profilesLoading) {
+    return (
+      <div className="flex items-center justify-center h-full min-h-[400px] bg-gray-100 rounded-xl">
+        <Loader2 className="animate-spin h-6 w-6 text-indigo-500 mr-2" />
+        <p className="text-gray-600">
+          {isLoading ? 'Loading chats...' : 'Loading user profiles...'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-[600px] bg-white rounded-xl shadow-2xl border border-gray-100">
+      {/* Header */}
+      <div className="p-4 border-b bg-indigo-50 rounded-t-xl flex items-center justify-between">
+        <div className="flex items-center">
+          <button onClick={onBack} className="mr-3 text-gray-600 hover:text-gray-800 transition">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h3 className="font-bold text-lg text-indigo-700 flex items-center">
+            <MessageSquare className="w-5 h-5 mr-2" /> Recent Chats
+          </h3>
+        </div>
+        <div className="text-sm text-gray-600">
+          {chats.length} conversation{chats.length !== 1 ? 's' : ''}
+        </div>
+      </div>
+
+      {/* Chat List */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar">
+        {chats.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-gray-500">
+            <MessageSquare className="w-12 h-12 mb-4 text-gray-300" />
+            <p className="text-lg font-medium">No conversations yet</p>
+            <p className="text-sm">Start a conversation from the Matchmaker tab</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {chats
+              .filter((chat) => {
+                const otherUserId = getOtherParticipant(chat);
+                return userProfiles[otherUserId]; // Only show chats where we have the user profile
+              })
+              .map((chat) => {
+                const otherUserId = getOtherParticipant(chat);
+                const otherUser = userProfiles[otherUserId];
+                
+                return (
+                  <button
+                    key={chat.id}
+                    onClick={() => onSelectChat(otherUser)}
+                    className="w-full p-4 hover:bg-gray-50 transition text-left"
+                  >
+                    <div className="flex items-center">
+                      <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+                        <span className="text-sm font-semibold text-indigo-600">
+                          {otherUser.name?.charAt(0) || 'U'}
+                        </span>
+                      </div>
+                      <div className="ml-3 flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <p className="font-medium text-gray-900 truncate">
+                            {otherUser.name || 'Unknown User'}
+                          </p>
+                          <span className="text-xs text-gray-500">
+                            {formatLastMessageTime(chat.lastMessageTime)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <p className="text-sm text-gray-500 truncate">
+                            {chat.lastMessage || 'No messages yet'}
+                          </p>
+                          {chat.unreadCount > 0 && (
+                            <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center">
+                              {chat.unreadCount}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            
+            {/* Show message if all chats have unknown users */}
+            {chats.length > 0 && chats.every((chat) => {
+              const otherUserId = getOtherParticipant(chat);
+              return !userProfiles[otherUserId];
+            }) && (
+              <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8">
+                <User className="w-12 h-12 mb-4 text-gray-300" />
+                <p className="text-lg font-medium">No valid conversations found</p>
+                <p className="text-sm">User profiles may not be available</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// --- Notification Component ---
+const NotificationCenter = ({ db, currentUserId, notifications, onClose }) => {
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Mark notification as read
+  const markAsRead = async (notificationId) => {
+    if (!db || !notificationId) return;
+    
+    try {
+      const notificationRef = doc(db, `artifacts/${appId}/public/data/notifications`, notificationId);
+      await setDoc(notificationRef, {
+        isRead: true,
+        readAt: serverTimestamp()
+      }, { merge: true });
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+    }
+  };
+
+  // Mark all notifications as read
+  const markAllAsRead = async () => {
+    if (!db || !currentUserId) return;
+    
+    setIsLoading(true);
+    try {
+      const unreadNotifications = notifications.filter(n => !n.isRead);
+      
+      for (const notification of unreadNotifications) {
+        await markAsRead(notification.id);
+      }
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const unreadCount = notifications.filter(n => !n.isRead).length;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[600px] flex flex-col">
+        {/* Header */}
+        <div className="p-4 border-b bg-indigo-50 rounded-t-xl flex items-center justify-between">
+          <h3 className="font-bold text-lg text-indigo-700 flex items-center">
+            <Bell className="w-5 h-5 mr-2" /> Notifications
+            {unreadCount > 0 && (
+              <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 ml-2">
+                {unreadCount}
+              </span>
+            )}
+          </h3>
+          <div className="flex items-center space-x-2">
+            {unreadCount > 0 && (
+              <button
+                onClick={markAllAsRead}
+                disabled={isLoading}
+                className="text-sm text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+              >
+                Mark all read
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+              <XCircle className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Notifications List */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {notifications.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8">
+              <Bell className="w-12 h-12 mb-4 text-gray-300" />
+              <p className="text-lg font-medium">No notifications</p>
+              <p className="text-sm">You're all caught up!</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {notifications.map((notification) => (
+                <div
+                  key={notification.id}
+                  className={`p-4 hover:bg-gray-50 transition ${
+                    !notification.isRead ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
+                  }`}
+                >
+                  <div className="flex items-start">
+                    <div className="flex-shrink-0">
+                      {notification.type === 'message' ? (
+                        <MessageSquare className="w-5 h-5 text-blue-500" />
+                      ) : (
+                        <Bell className="w-5 h-5 text-gray-400" />
+                      )}
+                    </div>
+                    <div className="ml-3 flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">
+                        {notification.title}
+                      </p>
+                      <p className="text-sm text-gray-500 mt-1">
+                        {notification.message}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {notification.timestamp?.toDate().toLocaleString()}
+                      </p>
+                    </div>
+                    {!notification.isRead && (
+                      <button
+                        onClick={() => markAsRead(notification.id)}
+                        className="ml-2 text-xs text-blue-600 hover:text-blue-800"
+                      >
+                        Mark read
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- Chats Manager Component ---
+const ChatsManager = ({ db, userId, userName, userType, pendingConversation, onConversationStarted }) => {
+  const [activeChat, setActiveChat] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [chats, setChats] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [userProfiles, setUserProfiles] = useState({});
+
+  // Handle pending conversation from Matchmaker
+  useEffect(() => {
+    if (pendingConversation && !activeChat) {
+      console.log('🚀 Starting pending conversation with:', pendingConversation);
+      setActiveChat(pendingConversation);
+      // Don't clear pending conversation immediately - let it persist
+      // onConversationStarted(); 
+    }
+  }, [pendingConversation, activeChat]);
+
+  // Handle opening chat from notifications
+  useEffect(() => {
+    const handleOpenChatFromNotification = (event) => {
+      const { partner } = event.detail;
+      console.log('🔔 Opening chat from notification:', partner);
+      console.log('🔔 Available chats:', chats);
+      console.log('🔔 Available user profiles:', userProfiles);
+      
+      // Try to find the correct chat participant by matching the notification sender
+      let correctParticipant = null;
+      let matchingChat = null;
+      
+      // First, try to find by exact userId match
+      for (const chat of chats) {
+        const otherParticipant = getOtherParticipant(chat);
+        if (otherParticipant === partner.userId) {
+          const profile = userProfiles[otherParticipant];
+          if (profile) {
+            correctParticipant = profile;
+            matchingChat = chat;
+            console.log('✅ Found exact userId match:', profile);
+            break;
+          }
+        }
+      }
+      
+      // If not found, try to find by name match in existing chats
+      if (!correctParticipant) {
+        for (const chat of chats) {
+          const otherParticipant = getOtherParticipant(chat);
+          const profile = userProfiles[otherParticipant];
+          
+          if (profile && profile.name && partner.name) {
+            const nameMatch = profile.name.toLowerCase().includes(partner.name.toLowerCase()) ||
+                             partner.name.toLowerCase().includes(profile.name.toLowerCase());
+            
+            if (nameMatch) {
+              correctParticipant = profile;
+              matchingChat = chat;
+              console.log('✅ Found name match:', profile);
+              break;
+            }
+          }
+        }
+      }
+      
+      // If still not found, try to find by partial ID match
+      if (!correctParticipant) {
+        for (const chat of chats) {
+          const otherParticipant = getOtherParticipant(chat);
+          
+          if (otherParticipant.includes(partner.userId) || partner.userId.includes(otherParticipant)) {
+            const profile = userProfiles[otherParticipant];
+            if (profile) {
+              correctParticipant = profile;
+              matchingChat = chat;
+              console.log('✅ Found partial ID match:', profile);
+              break;
+            }
+          }
+        }
+      }
+      
+      // If we found a matching chat, use the actual participant ID from that chat
+      const chatPartner = correctParticipant ? {
+        userId: getOtherParticipant(matchingChat), // Use the actual chat participant ID
+        name: correctParticipant.name,
+        userType: correctParticipant.userType || 'unknown'
+      } : {
+        userId: partner.userId,
+        name: partner.name || partner.userId,
+        userType: partner.userType || 'unknown'
+      };
+      
+      console.log('🔔 Setting active chat with:', chatPartner);
+      setActiveChat(chatPartner);
+    };
+
+    const handleMarkNotificationAsRead = (event) => {
+      const { notificationId } = event.detail;
+      console.log('📖 Marking notification as read:', notificationId);
+      markNotificationAsRead(notificationId);
+    };
+
+    window.addEventListener('openChatFromNotification', handleOpenChatFromNotification);
+    window.addEventListener('markNotificationAsRead', handleMarkNotificationAsRead);
+    
+    return () => {
+      window.removeEventListener('openChatFromNotification', handleOpenChatFromNotification);
+      window.removeEventListener('markNotificationAsRead', handleMarkNotificationAsRead);
+    };
+  }, [chats, userProfiles]);
+
+  // Close dropdown menus when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.chat-dropdown') && !event.target.closest('button[title="Chat options"]')) {
+        document.querySelectorAll('.chat-dropdown').forEach(dropdown => {
+          dropdown.classList.add('hidden');
+        });
+      }
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  // Listen for user's chats
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    console.log('🔍 Fetching chats for userId:', userId);
+    setIsLoading(true);
+    
+    const chatsCollectionRef = collection(db, `artifacts/${appId}/public/data/chats`);
+    
+    // Try the array-contains query first, but also have a fallback
+    const userChatsQuery = query(chatsCollectionRef, where('participants', 'array-contains', userId));
+    
+    // Fallback: get all chats and filter client-side
+    const allChatsQuery = query(chatsCollectionRef);
+
+    const unsubscribe = onSnapshot(userChatsQuery, (snapshot) => {
+      console.log('📊 Primary query result:', snapshot.docs.length, 'docs');
+      
+      if (snapshot.docs.length === 0) {
+        console.log('🔄 Primary query empty, trying fallback...');
+        // Try fallback query
+        const unsubscribeFallback = onSnapshot(allChatsQuery, (fallbackSnapshot) => {
+          console.log('📊 Fallback query result:', fallbackSnapshot.docs.length, 'docs');
+          const allChats = fallbackSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          
+          // Filter client-side
+          const userChats = allChats.filter(chat => 
+            chat.participants && chat.participants.includes(userId)
+          );
+          
+          console.log('💬 Filtered chats:', userChats.length);
+          console.log('💬 All chats:', allChats);
+          console.log('💬 User chats:', userChats);
+          
+          processChats(userChats);
+        });
+        
+        return () => unsubscribeFallback();
+      } else {
+        processChats(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }
+    }, (error) => {
+      console.error("Error fetching chats:", error);
+      setIsLoading(false);
+    });
+
+    const processChats = (userChats) => {
+      console.log('💬 Processing chats:', userChats.length);
+      console.log('💬 Chat documents:', userChats);
+
+      // Sort chats: pinned first, then by last message timestamp
+      userChats.sort((a, b) => {
+        // First, sort by pinned status
+        if (a.isPinned && !b.isPinned) return -1;
+        if (!a.isPinned && b.isPinned) return 1;
+        
+        // If both have same pinned status, sort by timestamp
+        const aTime = a.lastMessageTime?.toMillis() || a.createdAt?.toMillis() || 0;
+        const bTime = b.lastMessageTime?.toMillis() || b.createdAt?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setChats(userChats);
+      setIsLoading(false);
+    };
+
+    return () => unsubscribe();
+  }, [db, userId]);
+
+  // Fetch user profiles for chat participants
+  useEffect(() => {
+    if (!db || !userId || chats.length === 0) return;
+
+    const fetchUserProfiles = async (userIds) => {
+      console.log('🔍 Fetching profiles for user IDs:', userIds);
+      const profiles = {};
+      
+      for (const participantId of userIds) {
+        if (participantId === userId) continue;
+        
+        try {
+          // Check if this is a Firebase UID (long random string) or custom ID
+          const isFirebaseUID = participantId.length > 20 && /^[a-zA-Z0-9]+$/.test(participantId);
+          
+          if (isFirebaseUID) {
+            // For Firebase UIDs, check all collections
+            let found = false;
+            
+            // Try users collection first
+            const userRef = doc(db, `artifacts/${appId}/public/data/users`, participantId);
+            const userSnap = await getDoc(userRef);
+            
+            if (userSnap.exists()) {
+              const data = userSnap.data();
+              profiles[participantId] = { ...data, userId: participantId };
+              console.log(`✅ Found Firebase user profile in users collection for ${participantId}:`, data.name);
+              found = true;
+            }
+            
+            // If not found in users, try professors collection
+            if (!found) {
+              const professorRef = doc(db, `artifacts/${appId}/public/data/professors`, participantId);
+              const professorSnap = await getDoc(professorRef);
+              
+              if (professorSnap.exists()) {
+                const data = professorSnap.data();
+                profiles[participantId] = { ...data, userId: participantId, userType: 'professor' };
+                console.log(`✅ Found Firebase user profile in professors collection for ${participantId}:`, data.name);
+                found = true;
+              }
+            }
+            
+            // If still not found, try students collection
+            if (!found) {
+              const studentRef = doc(db, `artifacts/${appId}/public/data/students`, participantId);
+              const studentSnap = await getDoc(studentRef);
+              
+              if (studentSnap.exists()) {
+                const data = studentSnap.data();
+                profiles[participantId] = { ...data, userId: participantId, userType: 'student' };
+                console.log(`✅ Found Firebase user profile in students collection for ${participantId}:`, data.name);
+                found = true;
+              }
+            }
+            
+            if (found) continue;
+          } else {
+              // For custom IDs, try direct lookup first
+              // Try professors collection first
+              const professorRef = doc(db, `artifacts/${appId}/public/data/professors`, participantId);
+              const professorSnap = await getDoc(professorRef);
+              
+              if (professorSnap.exists()) {
+                const data = professorSnap.data();
+                profiles[participantId] = { ...data, userId: participantId, userType: 'professor' };
+                console.log(`✅ Found professor profile for ${participantId}:`, data.name);
+                continue;
+              }
+              
+              // Try students collection
+              const studentRef = doc(db, `artifacts/${appId}/public/data/students`, participantId);
+              const studentSnap = await getDoc(studentRef);
+              
+              if (studentSnap.exists()) {
+                const data = studentSnap.data();
+                profiles[participantId] = { ...data, userId: participantId, userType: 'student' };
+                console.log(`✅ Found student profile for ${participantId}:`, data.name);
+                continue;
+              }
+              
+              // If direct lookup fails, search all collections for partial matches
+              console.log(`🔍 Direct lookup failed for ${participantId}, searching all collections...`);
+              
+              // Search in professors collection
+              const professorsQuery = query(collection(db, `artifacts/${appId}/public/data/professors`));
+              const professorsSnapshot = await getDocs(professorsQuery);
+              
+              console.log(`🔍 Searching ${professorsSnapshot.docs.length} professors for ${participantId}`);
+              
+              for (const doc of professorsSnapshot.docs) {
+                const data = doc.data();
+                console.log(`🔍 Checking professor ${doc.id}: name="${data.name}", customId="${data.customId}", userId="${data.userId}"`);
+                
+                // Check multiple matching criteria
+                const nameMatch = data.name && data.name.toLowerCase().includes(participantId.toLowerCase());
+                const customIdMatch = data.customId === participantId;
+                const userIdMatch = data.userId === participantId;
+                const reverseMatch = participantId.toLowerCase().includes(data.name?.toLowerCase() || '');
+                
+                if (nameMatch || customIdMatch || userIdMatch || reverseMatch) {
+                  profiles[participantId] = { ...data, userId: doc.id, userType: 'professor' };
+                  console.log(`✅ Found professor profile by search for ${participantId}:`, data.name);
+                  break;
+                }
+              }
+              
+              if (profiles[participantId]) continue;
+              
+              // Search in students collection
+              const studentsQuery = query(collection(db, `artifacts/${appId}/public/data/students`));
+              const studentsSnapshot = await getDocs(studentsQuery);
+              
+              console.log(`🔍 Searching ${studentsSnapshot.docs.length} students for ${participantId}`);
+              
+              for (const doc of studentsSnapshot.docs) {
+                const data = doc.data();
+                console.log(`🔍 Checking student ${doc.id}: name="${data.name}", customId="${data.customId}", userId="${data.userId}"`);
+                
+                // Check multiple matching criteria
+                const nameMatch = data.name && data.name.toLowerCase().includes(participantId.toLowerCase());
+                const customIdMatch = data.customId === participantId;
+                const userIdMatch = data.userId === participantId;
+                const reverseMatch = participantId.toLowerCase().includes(data.name?.toLowerCase() || '');
+                
+                if (nameMatch || customIdMatch || userIdMatch || reverseMatch) {
+                  profiles[participantId] = { ...data, userId: doc.id, userType: 'student' };
+                  console.log(`✅ Found student profile by search for ${participantId}:`, data.name);
+                  break;
+                }
+              }
+            }
+          
+          console.log(`❌ No profile found for ${participantId} in any collection`);
+        } catch (error) {
+          console.error(`Error fetching profile for ${participantId}:`, error);
+        }
+      }
+      
+      console.log('📊 Final profiles:', profiles);
+      setUserProfiles(profiles);
+    };
+
+    // Get all unique user IDs from chats
+    const allUserIds = new Set();
+    chats.forEach(chat => {
+      chat.participants.forEach(participant => allUserIds.add(participant));
+    });
+    
+    if (allUserIds.size > 0) {
+      fetchUserProfiles(Array.from(allUserIds));
+    }
+  }, [db, userId, chats]);
+
+  // Listen for notifications
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    const notificationsCollectionRef = collection(db, `artifacts/${appId}/public/data/notifications`);
+    const userNotificationsQuery = query(notificationsCollectionRef, where('recipientId', '==', userId));
+
+    const unsubscribe = onSnapshot(userNotificationsQuery, (snapshot) => {
+      const userNotifications = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      // Sort by timestamp (newest first)
+      userNotifications.sort((a, b) => {
+        const aTime = a.timestamp?.toMillis() || 0;
+        const bTime = b.timestamp?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setNotifications(userNotifications);
+      
+      // Count unread notifications
+      const unreadCount = userNotifications.filter(n => !n.isRead).length;
+      setUnreadNotificationCount(unreadCount);
+    }, (error) => {
+      console.error("Error fetching notifications:", error);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId]);
+
+  // Send notification function
+  const sendNotification = async (notificationData) => {
+    if (!db) return;
+    
+    try {
+      console.log('🔔 Sending notification:', notificationData);
+      const notificationsCollectionRef = collection(db, `artifacts/${appId}/public/data/notifications`);
+      const docRef = await addDoc(notificationsCollectionRef, {
+        ...notificationData,
+        isRead: false,
+        createdAt: serverTimestamp()
+      });
+      console.log('✅ Notification sent successfully:', docRef.id);
+    } catch (error) {
+      console.error('❌ Error sending notification:', error);
+    }
+  };
+
+  // Mark notification as read
+  const markNotificationAsRead = async (notificationId) => {
+    if (!db || !notificationId) return;
+    
+    try {
+      console.log('📖 Marking notification as read:', notificationId);
+      const notificationRef = doc(db, `artifacts/${appId}/public/data/notifications`, notificationId);
+      await setDoc(notificationRef, {
+        isRead: true,
+        readAt: serverTimestamp()
+      }, { merge: true });
+      
+      console.log('✅ Notification marked as read:', notificationId);
+    } catch (error) {
+      console.error('❌ Error marking notification as read:', error);
+    }
+  };
+
+  // Test notification function
+  const testNotification = async () => {
+    await sendNotification({
+      recipientId: userId,
+      senderId: 'test-sender',
+      senderName: 'Test User',
+      type: 'message',
+      title: 'Test Notification',
+      message: 'This is a test notification',
+      timestamp: serverTimestamp()
+    });
+  };
+
+  // Delete chat function
+  const deleteChat = async (chatId) => {
+    if (!db) return;
+    
+    try {
+      // Delete the chat document
+      const chatRef = doc(db, `artifacts/${appId}/public/data/chats`, chatId);
+      await deleteDoc(chatRef);
+      
+      // Also delete all messages in the chat
+      const messagesRef = collection(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`);
+      const messagesSnapshot = await getDocs(messagesRef);
+      
+      const deletePromises = messagesSnapshot.docs.map(messageDoc => 
+        deleteDoc(doc(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`, messageDoc.id))
+      );
+      
+      await Promise.all(deletePromises);
+      
+      console.log('✅ Chat deleted successfully:', chatId);
+      
+      // If this was the active chat, clear it
+      if (activeChat && chats.find(chat => chat.id === chatId)) {
+        setActiveChat(null);
+      }
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      alert('Failed to delete chat. Please try again.');
+    }
+  };
+
+  // Get the other participant in a chat
+  const getOtherParticipant = (chat) => {
+    if (!chat || !chat.participants || !Array.isArray(chat.participants)) {
+      console.log('⚠️ Invalid chat data:', chat);
+      return null;
+    }
+    
+    const otherParticipant = chat.participants.find(participant => participant !== userId);
+    console.log('🔍 getOtherParticipant:', { 
+      chatId: chat.id, 
+      participants: chat.participants, 
+      userId, 
+      otherParticipant 
+    });
+    
+    return otherParticipant || null;
+  };
+
+  // Format last message time
+  const formatLastMessageTime = (timestamp) => {
+    if (!timestamp) return '';
+    
+    const now = new Date();
+    const messageTime = timestamp.toDate();
+    const diffInHours = (now - messageTime) / (1000 * 60 * 60);
+    
+    if (diffInHours < 1) {
+      return 'Just now';
+    } else if (diffInHours < 24) {
+      return `${Math.floor(diffInHours)}h ago`;
+    } else {
+      return messageTime.toLocaleDateString();
+    }
+  };
+
+  // WhatsApp-like interface
+  return (
+    <div className="h-[600px] bg-white rounded-xl shadow-2xl border border-gray-100 flex">
+      {/* Left Sidebar - Recent Chats */}
+      <div className="w-1/3 border-r border-gray-200 flex flex-col">
+        {/* Sidebar Header */}
+        <div className="p-4 border-b bg-indigo-50">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-lg text-indigo-700 flex items-center">
+              <MessageSquare className="w-5 h-5 mr-2" /> Chats
+            </h3>
+            <button
+              onClick={() => {
+                // Show notifications modal
+                const notificationModal = document.createElement('div');
+                notificationModal.innerHTML = `
+                  <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onclick="if(event.target === this) this.remove()">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[600px] flex flex-col" onclick="event.stopPropagation()">
+                      <div class="p-4 border-b bg-indigo-50 rounded-t-xl flex items-center justify-between">
+                        <h3 class="font-bold text-lg text-indigo-700 flex items-center">
+                          <Bell class="w-5 h-5 mr-2" /> Notifications
+                          ${unreadNotificationCount > 0 ? `<span class="bg-red-500 text-white text-xs rounded-full px-2 py-1 ml-2">${unreadNotificationCount}</span>` : ''}
+                        </h3>
+                        <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700">
+                          <XCircle class="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div class="flex-1 overflow-y-auto p-4">
+                        ${notifications.length === 0 ? 
+                          '<div class="flex flex-col items-center justify-center h-full text-gray-500 p-8"><Bell class="w-12 h-12 mb-4 text-gray-300" /><p class="text-lg font-medium">No notifications</p><p class="text-sm">You\'re all caught up!</p></div>' :
+                          notifications.map(n => `
+                            <div class="p-4 hover:bg-gray-50 transition-all duration-300 cursor-pointer ${!n.isRead ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}" onclick="
+                              // Find the sender's profile and open chat
+                              const senderId = '${n.senderId}';
+                              const senderName = '${n.senderName}';
+                              const notificationId = '${n.id}';
+                              const partner = { userId: senderId, name: senderName };
+                              console.log('🔔 Notification clicked - dispatching event with partner:', partner);
+                              
+                              // Mark notification as read
+                              window.dispatchEvent(new CustomEvent('markNotificationAsRead', { 
+                                detail: { notificationId: notificationId } 
+                              }));
+                              
+                              // Remove this notification from the UI immediately
+                              this.style.opacity = '0';
+                              this.style.transform = 'translateX(100%)';
+                              setTimeout(() => {
+                                this.remove();
+                              }, 300);
+                              
+                              // Close modal after a short delay
+                              setTimeout(() => {
+                                this.closest('.fixed').remove();
+                              }, 350);
+                              
+                              // Trigger chat opening (this will be handled by the parent component)
+                              window.dispatchEvent(new CustomEvent('openChatFromNotification', { 
+                                detail: { partner: partner } 
+                              }));
+                            ">
+                              <div class="flex items-start">
+                                <div class="flex-shrink-0">
+                                  ${n.type === 'message' ? '<MessageSquare class="w-5 h-5 text-blue-500" />' : '<Bell class="w-5 h-5 text-gray-400" />'}
+                                </div>
+                                <div class="ml-3 flex-1 min-w-0">
+                                  <p class="text-sm font-medium text-gray-900">${n.title}</p>
+                                  <p class="text-sm text-gray-500 mt-1">${n.message}</p>
+                                  <p class="text-xs text-gray-400 mt-1">${n.timestamp?.toDate().toLocaleString()}</p>
+                                </div>
+                              </div>
+                            </div>
+                          `).join('')
+                        }
+                      </div>
+                    </div>
+                  </div>
+                `;
+                document.body.appendChild(notificationModal);
+              }}
+              className="relative flex items-center px-3 py-1 bg-green-500 text-white text-sm font-semibold rounded-lg hover:bg-green-600 transition duration-150"
+            >
+              <Bell className="w-4 h-4 mr-1" />
+              {unreadNotificationCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full px-1 py-0.5 min-w-[16px] text-center">
+                  {unreadNotificationCount}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Chat List */}
+        <div className="flex-1 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="animate-spin h-6 w-6 text-indigo-500 mr-2" />
+              <p className="text-gray-600">Loading chats...</p>
+            </div>
+          ) : chats.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8">
+              <MessageSquare className="w-12 h-12 mb-4 text-gray-300" />
+              <p className="text-lg font-medium">No conversations yet</p>
+              <p className="text-sm">Start a conversation from the Matchmaker tab</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {chats
+                .map((chat) => {
+                  const otherUserId = getOtherParticipant(chat);
+                  
+                  // Skip if we can't determine the other participant
+                  if (!otherUserId) {
+                    console.log('⚠️ Skipping chat with undefined otherUserId:', chat);
+                    return null;
+                  }
+                  
+                  const otherUser = userProfiles[otherUserId];
+                  const isActive = activeChat?.userId === otherUserId;
+                  
+                  // If we don't have the user profile, create a fallback
+                  const displayUser = otherUser || {
+                    userId: otherUserId,
+                    name: otherUserId && otherUserId.includes('_') ? otherUserId.split('_')[0] : otherUserId || 'Unknown User',
+                    userType: 'unknown'
+                  };
+                  
+                  return (
+                    <div key={chat.id} className="relative group">
+                      <button
+                        onClick={() => {
+                          console.log('🖱️ Chat clicked:', displayUser);
+                          setActiveChat(displayUser);
+                        }}
+                        className={`w-full p-4 hover:bg-gray-50 transition text-left ${
+                          isActive ? 'bg-indigo-50 border-r-4 border-r-indigo-500' : ''
+                        }`}
+                      >
+                        <div className="flex items-center">
+                          <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center">
+                            <span className="text-lg font-semibold text-indigo-600">
+                              {displayUser.name?.charAt(0) || 'U'}
+                            </span>
+                          </div>
+                          <div className="ml-3 flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center">
+                                <p className="font-medium text-gray-900 truncate">
+                                  {displayUser.name || 'Unknown User'}
+                                </p>
+                                {chat.isPinned && (
+                                  <svg className="w-4 h-4 ml-2 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  </svg>
+                                )}
+                              </div>
+                              <span className="text-xs text-gray-500">
+                                {formatLastMessageTime(chat.lastMessageTime)}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                              <p className="text-sm text-gray-500 truncate">
+                                {chat.lastMessage || 'No messages yet'}
+                              </p>
+                              {chat.unreadCount > 0 && (
+                                <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center">
+                                  {chat.unreadCount}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                      
+                      {/* 3-dots menu - appears on hover */}
+                      <div className="absolute right-2 top-1/2 transform -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // Close all other dropdowns first
+                              document.querySelectorAll('.chat-dropdown').forEach(dropdown => {
+                                dropdown.classList.add('hidden');
+                              });
+                              // Toggle current dropdown
+                              const dropdown = e.currentTarget.parentElement.querySelector('.chat-dropdown');
+                              dropdown.classList.toggle('hidden');
+                            }}
+                            className="bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-full p-1"
+                            title="Chat options"
+                          >
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                            </svg>
+                          </button>
+                          
+                          {/* Dropdown menu */}
+                          <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10 hidden chat-dropdown">
+                            <div className="py-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  // Toggle pin status
+                                  const chatRef = doc(db, `artifacts/${appId}/public/data/chats`, chat.id);
+                                  const isPinned = chat.isPinned || false;
+                                  
+                                  setDoc(chatRef, {
+                                    isPinned: !isPinned,
+                                    pinnedAt: !isPinned ? serverTimestamp() : null
+                                  }, { merge: true }).then(() => {
+                                    console.log(`✅ Chat ${!isPinned ? 'pinned' : 'unpinned'}:`, chat.id);
+                                  }).catch((error) => {
+                                    console.error('❌ Error pinning/unpinning chat:', error);
+                                  });
+                                  
+                                  e.target.closest('.relative').querySelector('.chat-dropdown').classList.add('hidden');
+                                }}
+                                className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                              >
+                                <svg className="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                                </svg>
+                                {chat.isPinned ? 'Unpin Chat' : 'Pin Chat'}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const newName = prompt(`Rename chat with ${displayUser.name || 'Unknown User'}:`, displayUser.name || 'Unknown User');
+                                  if (newName && newName.trim() !== '') {
+                                    // TODO: Implement rename functionality
+                                    console.log('Rename chat:', chat.id, 'to:', newName);
+                                  }
+                                  e.target.closest('.relative').querySelector('.chat-dropdown').classList.add('hidden');
+                                }}
+                                className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                              >
+                                <svg className="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                                Rename Chat
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Are you sure you want to delete this chat with ${displayUser.name || 'Unknown User'}?`)) {
+                                    deleteChat(chat.id);
+                                  }
+                                  e.target.closest('.relative').querySelector('.chat-dropdown').classList.add('hidden');
+                                }}
+                                className="flex items-center w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                              >
+                                <XCircle className="w-4 h-4 mr-3" />
+                                Delete Chat
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+                .filter(chat => chat !== null)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Right Side - Active Chat */}
+      <div className="flex-1 flex flex-col">
+        {activeChat ? (
+          <ChatWindow 
+            db={db}
+            currentUserId={userId}
+            partner={activeChat}
+            onEndChat={() => setActiveChat(null)}
+            onSendNotification={sendNotification}
+          />
+        ) : (
+          <div className="flex-1 flex items-center justify-center bg-gray-50">
+            <div className="text-center text-gray-500">
+              <MessageSquare className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+              <h3 className="text-xl font-medium mb-2">Select a conversation</h3>
+              <p className="text-sm">Choose a chat from the sidebar to start messaging</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // --- Matchmaker Component ---
-const Matchmaker = ({ db, userId, userName }) => {
+const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
-  const [activeChat, setActiveChat] = useState(null); // User object of the person currently chatting with
 
   // Production RAG Smart Search Handler with Authentication
   const handleSearch = async (e) => {
@@ -615,65 +1877,34 @@ const Matchmaker = ({ db, userId, userName }) => {
     }
 
     try {
-      console.log(`🔍 Sending production RAG query: "${term}"`);
+      console.log(`🔍 Sending production RAG query: "${term}" for user type: ${userType}`);
       
-      // Get authentication token
-      const token = localStorage.getItem('authToken');
-      if (!token) {
-        // Auto-login for demo
-        const loginResponse = await fetch('http://localhost:3003/auth/login', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            email: 'demo@academic-match.com', 
-            password: 'demo123' 
-          })
-        });
-        
-        if (loginResponse.ok) {
-          const loginData = await loginResponse.json();
-          localStorage.setItem('authToken', loginData.token);
-        }
+      // Determine which endpoint to call based on user type
+      let endpoint;
+      if (userType === 'professor') {
+        // Professors should see students
+        endpoint = 'http://localhost:3003/smart-match-students';
+        console.log('🎓 Professor searching for students');
+      } else if (userType === 'student') {
+        // Students should see professors
+        endpoint = 'http://localhost:3003/smart-match-public';
+        console.log('👨‍🏫 Student searching for professors');
+      } else {
+        // Default to professors for unknown user types
+        endpoint = 'http://localhost:3003/smart-match-public';
+        console.log('❓ Unknown user type, defaulting to professor search');
       }
       
-      // Call production RAG backend API with authentication
-      let authToken = localStorage.getItem('authToken');
-      if (!authToken) {
-        // Generate a token for the current Firebase user
-        try {
-          const tokenResponse = await fetch('http://localhost:3003/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              email: 'firebase-user@academic-matchmaker.com', 
-              password: 'firebase-auth-bridge' 
-            })
-          });
-          const tokenData = await tokenResponse.json();
-          authToken = tokenData.token;
-          localStorage.setItem('authToken', authToken);
-        } catch (error) {
-          throw new Error('Unable to authenticate with backend. Please try again.');
-        }
-      }
-      
-      const response = await fetch('http://localhost:3003/smart-match', {
+      // Call production RAG backend API
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ query: term })
       });
 
       if (!response.ok) {
-        if (response.status === 401) {
-          // Token expired, try to re-authenticate
-          localStorage.removeItem('authToken');
-          throw new Error('Authentication expired. Please try again.');
-        }
         throw new Error(`Production RAG API error: ${response.status} ${response.statusText}`);
       }
 
@@ -694,33 +1925,30 @@ const Matchmaker = ({ db, userId, userName }) => {
     }
   };
 
-  if (activeChat) {
-    // Renders the dedicated chat window when a message button is clicked
-    return (
-      <ChatWindow 
-        db={db}
-        currentUserId={userId}
-        partner={activeChat}
-        onEndChat={() => setActiveChat(null)}
-      />
-    );
-  }
 
   return (
     <div className="max-w-4xl mx-auto">
       <div className="bg-white p-6 rounded-xl shadow-lg mb-6 border border-gray-100">
-        <h3 className="text-2xl font-semibold text-indigo-700 mb-4 flex items-center">
+        <div className="mb-4">
+          <h3 className="text-2xl font-semibold text-indigo-700 flex items-center">
           <Zap className="w-6 h-6 mr-2" /> Academic Matchmaker
         </h3>
+        </div>
         <p className="text-gray-600 mb-4">
-            Find collaborators using AI-powered smart matching. Describe your research interests naturally (e.g., "I'm interested in quantum machine learning applications" or "I work on CRISPR gene editing for cancer therapy").
+          {userType === 'professor' 
+            ? "Find talented students using AI-powered smart matching. Describe what kind of students you're looking for (e.g., 'machine learning students interested in healthcare' or 'PhD students working on cancer research')."
+            : "Find collaborators using AI-powered smart matching. Describe your research interests naturally (e.g., 'I'm interested in quantum machine learning applications' or 'I work on CRISPR gene editing for cancer therapy')."
+          }
         </p>
         <form onSubmit={handleSearch} className="flex space-x-2">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Describe your research interests (e.g., 'quantum machine learning for drug discovery')..."
+            placeholder={userType === 'professor' 
+              ? "Describe what kind of students you're looking for (e.g., 'machine learning students interested in healthcare')..."
+              : "Describe your research interests (e.g., 'quantum machine learning for drug discovery')..."
+            }
             className="flex-1 rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500 transition duration-150"
             disabled={isSearching}
           />
@@ -754,7 +1982,9 @@ const Matchmaker = ({ db, userId, userName }) => {
                   </div>
                 </div>
                 <p className="text-md text-indigo-600 mb-2">{match.title} at {match.university}</p>
-                <p className="text-sm text-gray-600 mb-3"><strong>Research Area:</strong> {match.researchArea}</p>
+                <p className="text-sm text-gray-600 mb-3">
+                  <strong>{userType === 'professor' ? 'Student Research Area:' : 'Research Area:'}</strong> {match.researchArea}
+                </p>
                 
                 {/* Smart Justification */}
                 <div className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400">
@@ -769,7 +1999,7 @@ const Matchmaker = ({ db, userId, userName }) => {
             
             <div className="flex justify-end pt-3 border-t">
               <button
-                onClick={() => setActiveChat({ userId: match.id, name: match.name })}
+                onClick={() => onStartConversation && onStartConversation({ userId: match.id, name: match.name })}
                 className="flex items-center px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition duration-150 shadow-md transform hover:scale-[1.05]"
               >
                 <MessageSquare className="w-5 h-5 mr-2" /> Start Conversation
@@ -833,7 +2063,11 @@ const ProfessorManagement = ({ db, userId, userType }) => {
     try {
       const professorData = {
         ...newProfessor,
-        keywords: newProfessor.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0),
+        keywords: typeof newProfessor.keywords === 'string' 
+          ? newProfessor.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0)
+          : Array.isArray(newProfessor.keywords) 
+            ? newProfessor.keywords.map(k => k.trim().toLowerCase()).filter(k => k.length > 0)
+            : [],
         createdAt: serverTimestamp(),
         addedBy: userId,
         isActive: true
@@ -896,7 +2130,13 @@ const ProfessorManagement = ({ db, userId, userType }) => {
           department: professor.department || '',
           lab: professor.lab || '',
           bio: professor.bio || '',
-          keywords: professor.keywords ? professor.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0) : [],
+          keywords: professor.keywords 
+            ? (typeof professor.keywords === 'string' 
+                ? professor.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0)
+                : Array.isArray(professor.keywords) 
+                  ? professor.keywords.map(k => k.trim().toLowerCase()).filter(k => k.length > 0)
+                  : [])
+            : [],
           availability: professor.availability || 'Available for collaborations',
           createdAt: serverTimestamp(),
           addedBy: userId,
@@ -1262,6 +2502,7 @@ const App = () => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [userType, setUserType] = useState(''); // 'student' or 'professor'
   const [onboardingStep, setOnboardingStep] = useState(0);
+  const [pendingConversation, setPendingConversation] = useState(null); // Track conversation to start
 
   // Profile Data
   const [profileData, setProfileData] = useState({
@@ -1314,25 +2555,70 @@ const App = () => {
         setDb(newDb);
 
         const unsubscribe = onAuthStateChanged(newAuth, async (user) => {
+          console.log('🔐 Auth state changed:', user ? `User ${user.uid} logged in` : 'User logged out');
+          
           if (user) {
             setUserId(user.uid);
             setShowAuth(false);
+            console.log('🔍 Checking user profile for:', user.uid);
             
-            // Check if user has completed onboarding
-            const userDocRef = doc(newDb, `artifacts/${appId}/public/data/users`, user.uid);
-            const userDoc = await getDoc(userDocRef);
+            // Check if user has completed onboarding in any collection
+            let userProfile = null;
+            let userType = null;
             
-            if (userDoc.exists() && userDoc.data().userType) {
+            try {
+              // Check professors collection first
+              const professorRef = doc(newDb, `artifacts/${appId}/public/data/professors`, user.uid);
+              const professorSnap = await getDoc(professorRef);
+              
+              if (professorSnap.exists()) {
+                userProfile = professorSnap.data();
+                userType = 'professor';
+              } else {
+                // Check students collection
+                const studentRef = doc(newDb, `artifacts/${appId}/public/data/students`, user.uid);
+                const studentSnap = await getDoc(studentRef);
+                
+                if (studentSnap.exists()) {
+                  userProfile = studentSnap.data();
+                  userType = 'student';
+                } else {
+                  // Fallback to users collection
+                  const userRef = doc(newDb, `artifacts/${appId}/public/data/users`, user.uid);
+                  const userSnap = await getDoc(userRef);
+                  
+                  if (userSnap.exists()) {
+                    userProfile = userSnap.data();
+                    userType = userProfile.userType;
+                  }
+                }
+              }
+              
+              if (userProfile && userType) {
               // User has completed onboarding
+                console.log(`✅ User ${user.uid} found in ${userType} collection, skipping onboarding`);
+                console.log('User profile data:', userProfile);
               setShowOnboarding(false);
+                setUserType(userType);
+                setProfileData(prev => ({ ...prev, ...userProfile, userType }));
             } else {
               // User needs to complete onboarding
+                console.log(`⚠️ User ${user.uid} not found in any collection, showing onboarding`);
+                setShowOnboarding(true);
+                setUserType('');
+                setProfileData(prev => ({ ...prev, userType: '' }));
+              }
+            } catch (error) {
+              console.error('Error checking user profile:', error);
               setShowOnboarding(true);
             }
           } else {
+            console.log('🚪 User logged out, showing auth form');
             setUserId(null);
             setShowAuth(true);
             setShowOnboarding(false);
+            setUserType('');
+            setProfileData(prev => ({ ...prev, userType: '' }));
           }
           setIsAuthReady(true);
           setLoading(false);
@@ -1394,7 +2680,19 @@ const App = () => {
     if (!db || !userId) return;
     
     try {
-      const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, userId);
+      // Determine the correct collection based on newUserType
+      let collectionPath;
+      if (newUserType === 'professor') {
+        collectionPath = `artifacts/${appId}/public/data/professors`;
+      } else if (newUserType === 'student') {
+        collectionPath = `artifacts/${appId}/public/data/students`;
+      } else {
+        collectionPath = `artifacts/${appId}/public/data/users`;
+      }
+      
+      console.log(`🔄 Setting user type to ${newUserType} in collection: ${collectionPath}`);
+      
+      const userDocRef = doc(db, collectionPath, userId);
       await setDoc(userDocRef, {
         userType: newUserType,
         lastUpdated: new Date()
@@ -1418,15 +2716,36 @@ const App = () => {
     setLoading(true);
     try {
       // CRITICAL: Convert keywords string to a lowercase array for searching
-      const keywordsArray = profileData.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0);
+      let keywordsArray = [];
+      if (profileData.keywords) {
+        if (typeof profileData.keywords === 'string') {
+          keywordsArray = profileData.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0);
+        } else if (Array.isArray(profileData.keywords)) {
+          keywordsArray = profileData.keywords.map(k => k.trim().toLowerCase()).filter(k => k.length > 0);
+        }
+      }
       
       const dataToSave = {
           ...profileData,
           keywords: keywordsArray, // Store as array for the 'array-contains' query to work
       };
 
-      const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, userId);
+      // Save to appropriate collection based on user type
+      let collectionPath;
+      if (profileData.userType === 'professor') {
+        collectionPath = `artifacts/${appId}/public/data/professors`;
+      } else if (profileData.userType === 'student') {
+        collectionPath = `artifacts/${appId}/public/data/students`;
+      } else {
+        // Fallback to users collection for backward compatibility
+        collectionPath = `artifacts/${appId}/public/data/users`;
+      }
+
+      console.log(`💾 Saving profile to: ${collectionPath} for userType: ${profileData.userType}`);
+      const userDocRef = doc(db, collectionPath, userId);
       await setDoc(userDocRef, dataToSave, { merge: true });
+      console.log(`✅ Profile saved successfully to ${collectionPath}`);
+      
       setMessage('Profile saved successfully! Ready to connect.');
       
       // Update local state to reflect the data structure sent to Firestore for the keywords field
@@ -1450,20 +2769,9 @@ const App = () => {
     try {
       if (authMode === 'signup') {
         const userCredential = await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
-        // Create user profile
+        // Don't save incomplete profile data - wait for onboarding completion
         if (userCredential.user) {
-          const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, userCredential.user.uid);
-          await setDoc(userDocRef, {
-            name: authForm.name,
-            email: authForm.email,
-            title: '',
-            university: '',
-            researchArea: '',
-            keywords: '',
-            bio: '',
-            yearsExperience: 0,
-            isVerified: false,
-          });
+          console.log('User created successfully, proceeding to onboarding');
         }
         setMessage('Account created successfully!');
       } else {
@@ -1514,6 +2822,7 @@ const App = () => {
               <button
                 onClick={() => {
                   setUserType('student');
+                  setProfileData(prev => ({ ...prev, userType: 'student' }));
                   setOnboardingStep(1);
                 }}
                 className="p-6 border-2 border-gray-200 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all text-left"
@@ -1530,6 +2839,7 @@ const App = () => {
               <button
                 onClick={() => {
                   setUserType('professor');
+                  setProfileData(prev => ({ ...prev, userType: 'professor' }));
                   setOnboardingStep(1);
                 }}
                 className="p-6 border-2 border-gray-200 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all text-left"
@@ -1831,7 +3141,19 @@ const App = () => {
     if (!db || !userId) return;
     
     try {
-      const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, userId);
+      // Determine the correct collection based on userType
+      let collectionPath;
+      if (userType === 'professor') {
+        collectionPath = `artifacts/${appId}/public/data/professors`;
+      } else if (userType === 'student') {
+        collectionPath = `artifacts/${appId}/public/data/students`;
+      } else {
+        collectionPath = `artifacts/${appId}/public/data/users`;
+      }
+      
+      console.log(`🎯 Completing onboarding for ${userType} in collection: ${collectionPath}`);
+      
+      const userDocRef = doc(db, collectionPath, userId);
       await setDoc(userDocRef, {
         ...profileData,
         userType,
@@ -1840,7 +3162,7 @@ const App = () => {
       });
       
       // Update the main userType state
-      setUserType(profileData.userType);
+      setUserType(userType);
       
       setShowOnboarding(false);
       setMessage('Profile setup completed successfully!');
@@ -2085,13 +3407,19 @@ const App = () => {
           <p className="text-yellow-700 mb-4">Please select your role to access all features:</p>
           <div className="flex space-x-4">
             <button
-              onClick={() => setUserTypeManually('student')}
+              onClick={() => {
+                setProfileData(prev => ({ ...prev, userType: 'student' }));
+                setShowOnboarding(true);
+              }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
             >
               I'm a Student
             </button>
             <button
-              onClick={() => setUserTypeManually('professor')}
+              onClick={() => {
+                setProfileData(prev => ({ ...prev, userType: 'professor' }));
+                setShowOnboarding(true);
+              }}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
             >
               I'm a Professor
@@ -2204,7 +3532,51 @@ const App = () => {
       db={db} 
       userId={userId} 
       userName={profileData.name} 
+      userType={userType}
+      onStartConversation={async (partner) => {
+        // Create chat document immediately to persist it
+        if (db && userId && partner.userId) {
+          try {
+            const participants = [userId, partner.userId].sort();
+            const chatId = participants.join('_');
+            
+            const chatRef = doc(db, `artifacts/${appId}/public/data/chats`, chatId);
+            const chatSnap = await getDoc(chatRef);
+            
+            if (!chatSnap.exists()) {
+              await setDoc(chatRef, {
+                participants: participants,
+                createdAt: serverTimestamp(),
+                lastMessage: '',
+                lastMessageTime: serverTimestamp(),
+                lastMessageSender: ''
+              });
+              console.log('✅ Created new chat:', chatId, 'with participants:', participants);
+            } else {
+              console.log('✅ Chat already exists:', chatId, 'with participants:', participants);
+            }
+          } catch (error) {
+            console.error('Error creating chat:', error);
+          }
+        }
+        
+        setPendingConversation(partner);
+        setActiveTab('chats');
+      }}
     />
+  );
+
+  const renderChatsTab = () => (
+    <div className="max-w-4xl mx-auto">
+      <ChatsManager 
+        db={db} 
+        userId={userId} 
+        userName={profileData.name || 'User'} 
+        userType={userType}
+        pendingConversation={pendingConversation}
+        onConversationStarted={() => setPendingConversation(null)}
+      />
+    </div>
   );
 
 
@@ -2226,6 +3598,7 @@ const App = () => {
 
   // Show onboarding if user is logged in but hasn't completed setup
   if (showOnboarding && userId) {
+    console.log('📝 Showing onboarding for user:', userId);
     return renderOnboarding();
   }
 
@@ -2280,6 +3653,12 @@ const App = () => {
           <Globe className="w-5 h-5 mr-2" /> Global Feed
         </button>
         <button
+          onClick={() => setActiveTab('chats')}
+          className={`px-4 py-2 flex items-center font-medium ${activeTab === 'chats' ? 'border-b-4 border-indigo-600 text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+        >
+          <MessageSquare className="w-5 h-5 mr-2" /> Chats
+        </button>
+        <button
           onClick={() => setActiveTab('profile')}
           className={`px-4 py-2 flex items-center font-medium ${activeTab === 'profile' ? 'border-b-4 border-indigo-600 text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
         >
@@ -2301,6 +3680,7 @@ const App = () => {
         {activeTab === 'profile' && renderProfileTab()}
         {activeTab === 'feed' && renderFeedTab()}
         {activeTab === 'matchmaker' && renderMatchmakerTab()}
+        {activeTab === 'chats' && renderChatsTab()}
         {activeTab === 'admin' && <AdminDashboard db={db} userId={userId} />}
       </main>
 

@@ -1,6 +1,6 @@
 // Firestore Integration for Professor Data
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, getDocs, query, where } from 'firebase/firestore';
+import { getFirestore, collection, getDocs, query, where, connectFirestoreEmulator } from 'firebase/firestore';
 
 // Firebase configuration (same as frontend)
 const firebaseConfig = {
@@ -22,11 +22,13 @@ async function getProfessorsFromFirestore() {
   try {
     console.log('🔍 Fetching professors from Firestore...');
     
-    // Try different collection paths
+    // Try different collection paths - prioritize separate professors collection
     const possiblePaths = [
+      'artifacts/academic-match-production/public/data/professors',
       'artifacts/academic-matchmaker-prod/public/data/professors',
       'professors',
-      'artifacts/academic-matchmaker-prod/professors'
+      'artifacts/academic-match-production/public/data/users', // Fallback to users collection
+      'artifacts/academic-matchmaker-prod/public/data/users'
     ];
     
     let professors = [];
@@ -39,11 +41,17 @@ async function getProfessorsFromFirestore() {
         professors = [];
         snapshot.forEach(doc => {
           const data = doc.data();
+          // Filter for professors only if this is a users collection
+          if (path.includes('users') && data.userType !== 'professor') {
+            return; // Skip non-professors
+          }
+          
           professors.push({
             id: doc.id,
             ...data,
             // Ensure keywords is an array
-            keywords: Array.isArray(data.keywords) ? data.keywords : []
+            keywords: Array.isArray(data.keywords) ? data.keywords : 
+                     (typeof data.keywords === 'string' ? data.keywords.split(',').map(k => k.trim()) : [])
           });
         });
         
@@ -157,7 +165,93 @@ async function searchProfessorsInFirestore(query) {
   }
 }
 
+// Function to get students from Firestore
+async function getStudentsFromFirestore() {
+  try {
+    console.log('🔍 Fetching students from Firestore...');
+    
+    // Try different collection paths - prioritize separate students collection
+    const possiblePaths = [
+      'artifacts/academic-match-production/public/data/students',
+      'artifacts/academic-matchmaker-prod/public/data/students',
+      'students',
+      'artifacts/academic-match-production/public/data/users', // Fallback to users collection
+      'artifacts/academic-matchmaker-prod/public/data/users'
+    ];
+    
+    let students = [];
+    
+    for (const path of possiblePaths) {
+      try {
+        const studentsCollection = collection(db, path);
+        const snapshot = await getDocs(studentsCollection);
+        
+        students = [];
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          // Filter for students only if this is a users collection
+          if (path.includes('users') && data.userType !== 'student') {
+            return; // Skip non-students
+          }
+          
+          students.push({
+            id: doc.id,
+            ...data,
+            // Ensure keywords is an array
+            keywords: Array.isArray(data.keywords) ? data.keywords : 
+                     (typeof data.keywords === 'string' ? data.keywords.split(',').map(k => k.trim()) : [])
+          });
+        });
+        
+        if (students.length > 0) {
+          console.log(`📊 Loaded ${students.length} students from Firestore path: ${path}`);
+          return students;
+        }
+      } catch (pathError) {
+        console.log(`⚠️ Path ${path} not accessible:`, pathError.message);
+        continue;
+      }
+    }
+    
+    console.log('⚠️ No students found in any Firestore path');
+    return [];
+    
+  } catch (error) {
+    console.error('❌ Error fetching students from Firestore:', error);
+    return [];
+  }
+}
+
+// Function to search students in Firestore
+async function searchStudentsInFirestore(query) {
+  try {
+    const students = await getStudentsFromFirestore();
+    
+    // Simple keyword matching (can be enhanced with more sophisticated search)
+    const queryLower = query.toLowerCase();
+    const matchingStudents = students.filter(student => {
+      const searchText = [
+        student.name,
+        student.researchArea || student.interests?.join(' ') || '',
+        student.university,
+        student.title,
+        student.bio,
+        ...(student.keywords || [])
+      ].join(' ').toLowerCase();
+      
+      return searchText.includes(queryLower);
+    });
+    
+    return matchingStudents;
+  } catch (error) {
+    console.error('❌ Error searching students in Firestore:', error);
+    return [];
+  }
+}
+
 export {
   getProfessorsFromFirestore,
-  searchProfessorsInFirestore
+  searchProfessorsInFirestore,
+  getStudentsFromFirestore,
+  searchStudentsInFirestore
 };
