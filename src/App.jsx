@@ -1879,39 +1879,55 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
     try {
       console.log(`🔍 Sending production RAG query: "${term}" for user type: ${userType}`);
       
-      // Determine which endpoint to call based on user type
-      let endpoint;
+      // Use the public endpoint for all users (it handles userType internally)
+      const endpoint = 'http://localhost:3003/smart-match-public';
+      
       if (userType === 'professor') {
-        // Professors should see students
-        endpoint = 'http://localhost:3003/smart-match-students';
         console.log('🎓 Professor searching for students');
-      } else if (userType === 'student') {
-        // Students should see professors
-        endpoint = 'http://localhost:3003/smart-match-public';
-        console.log('👨‍🏫 Student searching for professors');
       } else {
-        // Default to professors for unknown user types
-        endpoint = 'http://localhost:3003/smart-match-public';
-        console.log('❓ Unknown user type, defaulting to professor search');
+        console.log('👨‍🏫 Student searching for professors');
       }
       
-      // Call production RAG backend API
+      // Create an AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      // Call production RAG backend API with timeout and proper CORS handling
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
-        body: JSON.stringify({ query: term })
+        body: JSON.stringify({ 
+          query: term,
+          userType: userType || 'student' // Pass userType to backend
+        }),
+        signal: controller.signal,
+        mode: 'cors', // Explicitly enable CORS
+        credentials: 'omit' // Don't send credentials for CORS simplicity
       });
 
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
-        throw new Error(`Production RAG API error: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        let errorMessage = `Backend returned error: ${response.status} ${response.statusText}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error || errorJson.details || errorMessage;
+        } catch (e) {
+          // If not JSON, use text as-is
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
       const results = await response.json();
       console.log('📊 Production RAG results with Gemini:', results);
       
       setSearchResults(results);
+      setError(''); // Clear any previous errors
       
       if (results.length === 0) {
         setError(`No smart matches found for "${term}". Try different research interests or keywords.`);
@@ -1919,7 +1935,18 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
 
     } catch (err) {
       console.error("Error in production RAG smart matching:", err);
-      setError(`Production smart matching error: ${err.message}. Make sure the production RAG backend is running on port 3003.`);
+      
+      // Check if it's a network/CORS error or timeout
+      if (err.name === 'AbortError' || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        setError(`⚠️ Backend server is not responding. Please ensure the RAG backend is running on port 3003. Run 'npm start' in the rag-backend directory.`);
+      } else if (err.message.includes('CORS')) {
+        setError(`⚠️ CORS error detected. The backend may not be properly configured. Check rag-backend CORS settings allow http://localhost:3000`);
+      } else {
+        setError(`❌ ${err.message || 'Failed to connect to backend. Make sure the RAG backend is running on port 3003.'}`);
+      }
+      
+      // Set empty results on error
+      setSearchResults([]);
     } finally {
       setIsSearching(false);
     }
@@ -2496,6 +2523,7 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard'); // Default to dashboard tab
+  const [activeProfileTab, setActiveProfileTab] = useState('overview'); // Profile tabs: overview, education, experience, publications, skills, projects, achievements, contact
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
@@ -3393,118 +3421,354 @@ const App = () => {
 
   // --- RENDERING TABS ---
 
-  const renderProfileTab = () => (
-    <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl max-w-4xl mx-auto">
-      <h2 className="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6 flex items-center">
-        <User className="w-6 h-6 mr-2 text-indigo-500" />
-        {userType === 'professor' ? 'Professor Profile' : userType === 'student' ? 'Student Profile' : 'Academic Profile'}
-      </h2>
-      
-      {/* User Type Selector for existing users */}
-      {!userType && (
-        <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <h3 className="text-lg font-medium text-yellow-800 mb-2">Set Your Role</h3>
-          <p className="text-yellow-700 mb-4">Please select your role to access all features:</p>
-          <div className="flex space-x-4">
-            <button
-              onClick={() => {
-                setProfileData(prev => ({ ...prev, userType: 'student' }));
-                setShowOnboarding(true);
-              }}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-            >
-              I'm a Student
-            </button>
-            <button
-              onClick={() => {
-                setProfileData(prev => ({ ...prev, userType: 'professor' }));
-                setShowOnboarding(true);
-              }}
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
-            >
-              I'm a Professor
-            </button>
+  const renderProfileTab = () => {
+    // User Type Selector for existing users
+    if (!userType) {
+      return (
+        <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl max-w-4xl mx-auto">
+          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <h3 className="text-lg font-medium text-yellow-800 mb-2">Set Your Role</h3>
+            <p className="text-yellow-700 mb-4">Please select your role to access all features:</p>
+            <div className="flex space-x-4">
+              <button
+                onClick={() => {
+                  setProfileData(prev => ({ ...prev, userType: 'student' }));
+                  setShowOnboarding(true);
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+              >
+                I'm a Student
+              </button>
+              <button
+                onClick={() => {
+                  setProfileData(prev => ({ ...prev, userType: 'professor' }));
+                  setShowOnboarding(true);
+                }}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
+              >
+                I'm a Professor
+              </button>
+            </div>
           </div>
         </div>
-      )}
-      
-      <p className="text-gray-600 mb-6">
-        Complete your profile to be visible to others. (Your 8 modules are represented here.)
-      </p>
+      );
+    }
 
-      <form onSubmit={handleSaveProfile} className="space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Input 1: Name */}
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium text-gray-700">Full Name</label>
-            <input type="text" name="name" id="name" value={profileData.name} onChange={handleInputChange} required className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="Dr. Eleanor Vance"/>
-          </div>
+    const tabs = [
+      { id: 'overview', label: 'Overview' },
+      { id: 'education', label: 'Education' },
+      { id: 'experience', label: 'Experience' },
+      { id: 'publications', label: 'Publications & Research' },
+      { id: 'skills', label: 'Skills' },
+      { id: 'projects', label: 'Projects' },
+      { id: 'achievements', label: 'Achievements & Certifications' },
+      { id: 'contact', label: 'Contact & Social' }
+    ];
 
-          {/* Input 2: Title */}
-          <div>
-            <label htmlFor="title" className="block text-sm font-medium text-gray-700">Current Title/Position</label>
-            <input type="text" name="title" id="title" value={profileData.title} onChange={handleInputChange} required className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="Associate Professor of Astrophysics"/>
-          </div>
+    const renderTabContent = () => {
+      switch(activeProfileTab) {
+        case 'overview':
+          return (
+            <form onSubmit={handleSaveProfile} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Full Name *</label>
+                  <input type="text" name="name" value={profileData.name} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Enter your full name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    {userType === 'student' ? 'Degree Program *' : 'Current Title/Position *'}
+                  </label>
+                  <input type="text" name="title" value={profileData.title} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder={userType === 'student' ? 'PhD in Computer Science' : 'Associate Professor'}/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">University/Institution *</label>
+                  <input type="text" name="university" value={profileData.university} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Enter university/institution"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    {userType === 'student' ? 'Current Semester/Year' : 'Department *'}
+                  </label>
+                  <input type="text" name="department" value={profileData.department} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder={userType === 'student' ? 'Fall 2024, 3rd Year' : 'Computer Science'}/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    {userType === 'student' ? 'Research Interests' : 'Primary Research Area *'}
+                  </label>
+                  <input type="text" name="researchArea" value={profileData.researchArea} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Machine Learning, AI, etc."/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">About Me / Professional Bio *</label>
+                  <textarea name="bio" rows="4" value={profileData.bio} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Tell us about yourself..."></textarea>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="submit" disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          );
+        case 'education':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Degree/Certification *</label>
+                  <input type="text" name="degree" value={profileData.degree || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="PhD, Masters, etc."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Institution *</label>
+                  <input type="text" name="eduInstitution" value={profileData.eduInstitution || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="University name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                  <input type="date" name="eduStartDate" value={profileData.eduStartDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">End Date / Expected</label>
+                  <input type="date" name="eduEndDate" value={profileData.eduEndDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                {userType === 'student' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">GPA (Optional)</label>
+                    <input type="text" name="gpa" value={profileData.gpa || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="3.8"/>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'experience':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Position/Title *</label>
+                  <input type="text" name="expTitle" value={profileData.expTitle || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Research Assistant, etc."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Organization *</label>
+                  <input type="text" name="expOrganization" value={profileData.expOrganization || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Organization name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                  <input type="date" name="expStartDate" value={profileData.expStartDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                  <input type="date" name="expEndDate" value={profileData.expEndDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                  <textarea name="expDescription" rows="3" value={profileData.expDescription || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Describe your role and responsibilities..."></textarea>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'publications':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Title *</label>
+                  <input type="text" name="pubTitle" value={profileData.pubTitle || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Paper/Publication title"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Publication Year</label>
+                  <input type="number" name="pubYear" value={profileData.pubYear || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="2024"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Authors/Co-authors</label>
+                  <input type="text" name="pubAuthors" value={profileData.pubAuthors || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Author names"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Journal/Conference</label>
+                  <input type="text" name="pubJournal" value={profileData.pubJournal || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Journal or conference name"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Link/DOI</label>
+                  <input type="url" name="pubLink" value={profileData.pubLink || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://..."/>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'skills':
+          return (
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Skills (comma-separated)</label>
+                <textarea name="keywords" rows="3" value={profileData.keywords || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Python, Machine Learning, React, etc."></textarea>
+                <p className="text-xs text-gray-500 mt-1">Enter skills separated by commas</p>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'projects':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Project Title *</label>
+                  <input type="text" name="projTitle" value={profileData.projTitle || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Project name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Role</label>
+                  <input type="text" name="projRole" value={profileData.projRole || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Lead Developer, etc."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                  <input type="date" name="projStartDate" value={profileData.projStartDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                  <input type="date" name="projEndDate" value={profileData.projEndDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                  <textarea name="projDescription" rows="3" value={profileData.projDescription || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Project description..."></textarea>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Link/Repository</label>
+                  <input type="url" name="projLink" value={profileData.projLink || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://github.com/..."/>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'achievements':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Achievement/Certification *</label>
+                  <input type="text" name="achTitle" value={profileData.achTitle || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Award or certification name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Issuing Organization</label>
+                  <input type="text" name="achOrganization" value={profileData.achOrganization || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Organization name"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
+                  <input type="date" name="achDate" value={profileData.achDate || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500"/>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                  <textarea name="achDescription" rows="3" value={profileData.achDescription || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="Brief description..."></textarea>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        case 'contact':
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Email *</label>
+                  <input type="email" name="email" value={profileData.email || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="your.email@university.edu"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>
+                  <input type="tel" name="phone" value={profileData.phone || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="+1 (555) 123-4567"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">LinkedIn</label>
+                  <input type="url" name="linkedin" value={profileData.linkedin || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://linkedin.com/in/..."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Website/Portfolio</label>
+                  <input type="url" name="website" value={profileData.website || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://..."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">GitHub</label>
+                  <input type="url" name="github" value={profileData.github || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://github.com/..."/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Twitter/X</label>
+                  <input type="url" name="twitter" value={profileData.twitter || ''} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://twitter.com/..."/>
+                </div>
+              </div>
+              <div className="flex justify-end mt-6">
+                <button type="button" onClick={handleSaveProfile} disabled={loading} className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
+                  {loading ? <Loader2 className="animate-spin h-5 w-5" /> : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          );
+        default:
+          return null;
+      }
+    };
 
-          {/* Input 3: University */}
-          <div>
-            <label htmlFor="university" className="block text-sm font-medium text-gray-700">University/Institution</label>
-            <input type="text" name="university" id="university" value={profileData.university} onChange={handleInputChange} required className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="MIT / CERN"/>
-          </div>
-
-          {/* Input 4: Years Experience */}
-          <div>
-            <label htmlFor="yearsExperience" className="block text-sm font-medium text-gray-700">Years of Experience (Numeric)</label>
-            <input type="number" name="yearsExperience" id="yearsExperience" min="0" value={profileData.yearsExperience} onChange={handleInputChange} className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"/>
-          </div>
-
-          {/* Input 5: Research Area */}
-          <div className="md:col-span-2">
-            <label htmlFor="researchArea" className="block text-sm font-medium text-gray-700">Primary Research Area</label>
-            <input type="text" name="researchArea" id="researchArea" value={profileData.researchArea} onChange={handleInputChange} required className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="Quantum Computing, Epigenetics, or Medieval History"/>
-          </div>
-
-          {/* Input 6: Keywords for Matching */}
-          <div className="md:col-span-2">
-            <label htmlFor="keywords" className="block text-sm font-medium text-gray-700">Keywords for Matching (Comma-separated)</label>
-            <textarea name="keywords" id="keywords" rows="2" value={profileData.keywords} onChange={handleInputChange} className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="machine learning, natural language processing, deep learning, python"/>
+    return (
+      <div className="bg-white rounded-xl shadow-2xl max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-semibold text-gray-800">{profileData.name || 'Academic Profile'}</h2>
+              <p className="text-gray-600 mt-1">
+                {profileData.title || userType === 'student' ? 'Student' : 'Professor'} 
+                {profileData.university && ` • ${profileData.university}`}
+                {profileData.department && ` • ${profileData.department}`}
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Input 7: Bio */}
-        <div className="mt-6">
-          <label htmlFor="bio" className="block text-sm font-medium text-gray-700">About Me / Professional Bio</label>
-          <textarea name="bio" id="bio" rows="4" value={profileData.bio} onChange={handleInputChange} required className="block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="I am passionate about connecting theoretical physics with real-world applications..."></textarea>
+        {/* Tabs */}
+        <div className="border-b border-gray-200">
+          <div className="flex overflow-x-auto">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveProfileTab(tab.id)}
+                className={`px-6 py-4 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+                  activeProfileTab === tab.id
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Input 8: Verification Status (Simulated Module) */}
-        <div className="flex items-start">
-          <div className="flex items-center h-5">
-            <input id="isVerified" name="isVerified" type="checkbox" checked={profileData.isVerified} onChange={handleInputChange} className="h-5 w-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"/>
-          </div>
-          <div className="ml-3 text-sm">
-            <label htmlFor="isVerified" className="font-medium text-gray-700 flex items-center cursor-pointer">
-              <CheckCheck className="w-5 h-5 mr-1 text-green-500" />
-              Verification Status (Simulated)
-            </label>
-            <p className="text-gray-500">Check this box to simulate profile verification by an internal module.</p>
-          </div>
+        {/* Tab Content */}
+        <div className="p-6">
+          {renderTabContent()}
         </div>
-
-        {/* Submit Button */}
-        <div className="pt-6 border-t mt-8">
-          <button
-            type="submit"
-            disabled={loading || !userId}
-            className="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-xl text-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-[1.01]"
-          >
-            {loading ? <Loader2 className="animate-spin h-5 w-5 mr-3" /> : <Send className="w-5 h-5 mr-2" />}
-            {profileData.name ? 'Update Profile' : 'Save & Join Network'}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderFeedTab = () => (
     <div className="max-w-4xl mx-auto">

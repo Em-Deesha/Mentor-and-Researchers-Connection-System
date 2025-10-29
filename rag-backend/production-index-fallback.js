@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
-import { getProfessorsFromFirestore, searchProfessorsInFirestore } from './firestore-integration.js';
+import { getProfessorsFromFirestore, searchProfessorsInFirestore, getStudentsFromFirestore, searchStudentsInFirestore } from './firestore-integration.js';
 
 // Load environment variables
 dotenv.config({ path: './production.env' });
@@ -72,15 +72,27 @@ const corsOptions = {
   optionsSuccessStatus: 200
 };
 
-// Custom CORS middleware for explicit headers
+// Custom CORS middleware for explicit headers - allows all localhost ports including 3000 (Vite default)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (origin.includes('localhost:3004') || origin.includes('localhost:3001') || origin.includes('localhost:3000'))) {
+  
+  // Allow all localhost ports (including 3000, 3001, 3004, 5173, etc.)
+  if (origin && origin.match(/^http:\/\/localhost:\d+$/)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else if (origin && (
+    origin.includes('localhost:3004') || 
+    origin.includes('localhost:3001') || 
+    origin.includes('localhost:3000') ||
+    origin.includes('localhost:5173') ||
+    origin.includes('localhost:4173')
+  )) {
     res.header('Access-Control-Allow-Origin', origin);
   }
+  
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
+  
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
     return;
@@ -292,7 +304,7 @@ Focus on research area alignment, university reputation, and potential collabora
   }
 }
 
-// Production smart matching endpoint (with Firestore)
+// Production smart matching endpoint (with Firestore) - requires authentication
 app.post('/smart-match', authenticateToken, async (req, res) => {
   try {
     const { query } = req.body;
@@ -322,6 +334,74 @@ app.post('/smart-match', authenticateToken, async (req, res) => {
     
   } catch (error) {
     console.error('❌ Error in production smart matching:', error);
+    res.status(500).json({ 
+      error: 'Internal server error during smart matching',
+      details: error.message 
+    });
+  }
+});
+
+// Public smart matching endpoint (no authentication required) - for frontend direct access
+app.post('/smart-match-public', async (req, res) => {
+  try {
+    const { query, userType } = req.body;
+    
+    if (!query || query.trim().length < 3) {
+      return res.status(400).json({ 
+        error: 'Query must be at least 3 characters long' 
+      });
+    }
+    
+    console.log(`🔍 Processing public smart match query: "${query}" for userType: ${userType || 'unknown'}`);
+    
+    // Get data from Firestore based on user type
+    let matches = [];
+    
+    if (userType === 'professor') {
+      // Professors searching for students
+      const students = await searchStudentsInFirestore(query);
+      matches = students.slice(0, 5).map(student => ({
+        id: student.id || student.userId || `student_${Math.random().toString(36).substr(2, 9)}`,
+        userId: student.userId || student.id,
+        name: student.name || 'Unknown Student',
+        title: student.degree || student.title || 'Student',
+        university: student.university || 'Unknown University',
+        researchArea: student.researchArea || 'General Research',
+        bio: student.bio || '',
+        keywords: student.keywords || [],
+        justification: `Matches your search for ${query} based on research interests and academic profile.`,
+        similarityScore: 0.85
+      }));
+    } else {
+      // Students searching for professors (default)
+      const professors = await getProfessorsFromFirestore();
+      
+      if (professors.length === 0) {
+        console.log('⚠️ No professors found in Firestore');
+        return res.json([]);
+      }
+      
+      // Generate smart matches using Gemini with Firestore data
+      matches = await generateGeminiMatchesWithFirestore(query, professors);
+    }
+    
+    console.log(`✅ Generated ${matches.length} public smart matches`);
+    
+    // Set CORS headers explicitly
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    
+    res.json(matches);
+    
+  } catch (error) {
+    console.error('❌ Error in public smart matching:', error);
+    
+    // Set CORS headers even on error
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     res.status(500).json({ 
       error: 'Internal server error during smart matching',
       details: error.message 
@@ -367,9 +447,11 @@ app.get('/', (req, res) => {
     endpoints: {
       'POST /auth/login': 'Authentication endpoint',
       'POST /smart-match': 'AI-powered smart matching (requires authentication)',
+      'POST /smart-match-public': 'AI-powered smart matching (no authentication required)',
       'GET /health': 'Health check endpoint'
     },
-    status: 'running'
+    status: 'running',
+    cors: 'Enabled for all localhost ports (including 3000, 3001, 3004, 5173, 4173)'
   });
 });
 
