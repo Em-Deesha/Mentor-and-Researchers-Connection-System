@@ -1,12 +1,14 @@
-# 🎓 Mentor & Researchers Connection System
+# 🎓 Academic Matchmaker - Researchers & Supervisors Matching System
 
 A comprehensive platform that connects students with professors using AI-powered smart matching, real-time chat, and collaborative features.
 
-![GitHub stars](https://img.shields.io/github/stars/Em-Deesha/Mentor-and-Researchers-Connection-System)
-![GitHub forks](https://img.shields.io/github/forks/Em-Deesha/Mentor-and-Researchers-Connection-System)
-![GitHub license](https://img.shields.io/github/license/Em-Deesha/Mentor-and-Researchers-Connection-System)
+> ⚠️ **NEW TO THIS PROJECT?** See **[START.md](./START.md)** for quick setup instructions!
+> 
+> 🤖 **USING CURSOR AI?** Check **[.cursorrules](./.cursorrules)** for AI assistant context!
 
-> **Branch**: `adeesha-module` - Latest enhanced version with advanced chat system and AI integration
+![GitHub stars](https://img.shields.io/github/stars/Em-Deesha/Researchers-and-supervisors-matching-system)
+![GitHub forks](https://img.shields.io/github/forks/Em-Deesha/Researchers-and-supervisors-matching-system)
+![GitHub license](https://img.shields.io/github/license/Em-Deesha/Researchers-and-supervisors-matching-system)
 
 ## 🌟 Features
 
@@ -59,7 +61,7 @@ A comprehensive platform that connects students with professors using AI-powered
 ## 📁 Project Structure
 
 ```
-Mentor-and-Researchers-Connection-System/
+MATCH MODULE/
 ├── src/
 │   ├── App.jsx                    # Main application with all features
 │   ├── main.jsx                   # React entry point
@@ -76,9 +78,7 @@ Mentor-and-Researchers-Connection-System/
 ├── vite.config.js                 # Vite configuration
 ├── tailwind.config.js             # Tailwind CSS configuration
 ├── postcss.config.js              # PostCSS configuration
-├── README.md                      # This file
-├── FIREBASE-SETUP.md              # Firebase configuration guide
-└── RAG-SETUP.md                   # Backend setup guide
+└── README.md                      # This file
 ```
 
 ## 🚀 Quick Start
@@ -93,9 +93,8 @@ Mentor-and-Researchers-Connection-System/
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/Em-Deesha/Mentor-and-Researchers-Connection-System.git
-cd Mentor-and-Researchers-Connection-System
-git checkout adeesha-module
+git clone https://github.com/Em-Deesha/Researchers-and-supervisors-matching-system.git
+cd Researchers-and-supervisors-matching-system
 ```
 
 2. **Install frontend dependencies:**
@@ -132,22 +131,66 @@ NODE_ENV=development
 
 ### Running the Application
 
-1. **Start the backend server:**
+⚠️ **IMPORTANT: This project requires TWO servers to run simultaneously - Frontend and Backend.**
+
+**Both servers MUST be running for the application to work properly!**
+
+#### Option 1: Manual Start (Recommended for Development)
+
+**Terminal 1 - Start Backend Server:**
 ```bash
 cd rag-backend
 npm start
 ```
-Backend will run on `http://localhost:3003`
+✅ Backend will run on `http://localhost:3003`
+- You should see: `🚀 Production RAG Backend (Fallback) running on port 3003`
 
-2. **Start the frontend development server:**
+**Terminal 2 - Start Frontend Server:**
 ```bash
 npm run dev
 ```
-Frontend will run on `http://localhost:3001` (or next available port)
+✅ Frontend will run on `http://localhost:3000` (or next available port)
+- You should see: `➜  Local:   http://localhost:3000/`
 
-3. **Open your browser:**
-   - Frontend: `http://localhost:3001`
-   - Backend API: `http://localhost:3003`
+#### Option 2: Quick Start Script
+
+Use the convenience script to start the backend:
+```bash
+./start-backend.sh
+```
+
+Then in another terminal:
+```bash
+npm run dev
+```
+
+#### Option 3: Start Both Servers Together
+
+Requires `concurrently` package (install with `npm install`):
+```bash
+npm run start:all
+```
+
+This starts both backend and frontend in a single command.
+
+### ⚠️ Common Error: "Backend server is not responding"
+
+If you see this error in the frontend, it means:
+- ❌ Backend server is NOT running on port 3003
+- ✅ **Solution**: Start the backend server first (see Terminal 1 above)
+
+**Quick Check:**
+```bash
+curl http://localhost:3003/health
+```
+If this returns JSON, backend is running ✅
+If this fails, backend is NOT running ❌
+
+### Open Your Browser
+
+- **Frontend**: `http://localhost:3000` (or check terminal output)
+- **Backend API Health**: `http://localhost:3003/health`
+- **Backend API Docs**: `http://localhost:3003/`
 
 ## 🔧 Firebase Setup
 
@@ -457,8 +500,7 @@ For issues and questions:
 ## 📞 Contact
 
 - **GitHub**: [@Em-Deesha](https://github.com/Em-Deesha)
-- **Repository**: [Mentor-and-Researchers-Connection-System](https://github.com/Em-Deesha/Mentor-and-Researchers-Connection-System)
-- **Branch**: `adeesha-module` (Latest enhanced version)
+- **Repository**: [Researchers-and-supervisors-matching-system](https://github.com/Em-Deesha/Researchers-and-supervisors-matching-system)
 
 ---
 

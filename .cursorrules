@@ -1,0 +1,97 @@
+# Academic Matchmaker - Cursor AI Rules
+
+## ⚠️ CRITICAL: Two-Server Architecture
+
+This project requires **TWO servers** running simultaneously:
+
+1. **Backend Server** (RAG API) - Port 3003
+2. **Frontend Server** (React/Vite) - Port 3000
+
+**ALWAYS start BOTH servers before running the application!**
+
+## Quick Start Commands
+
+### Start Backend Only:
+```bash
+npm run start:backend
+# OR
+cd rag-backend && npm start
+```
+
+### Start Frontend Only:
+```bash
+npm run dev
+```
+
+### Start Both Servers Together:
+```bash
+npm run start:all
+```
+
+### Check if Backend is Running:
+```bash
+npm run test-backend
+# OR
+curl http://localhost:3003/health
+```
+
+## Common Errors and Solutions
+
+### Error: "Backend server is not responding"
+**Cause**: Backend server is not running on port 3003
+**Solution**: 
+1. Start backend: `npm run start:backend`
+2. Wait for: `🚀 Production RAG Backend (Fallback) running on port 3003`
+3. Then start frontend: `npm run dev`
+
+### Error: "Failed to fetch" or CORS errors
+**Cause**: Backend CORS not configured or backend not running
+**Solution**: 
+1. Ensure backend is running (see above)
+2. Backend CORS is configured to allow all localhost ports
+3. Check backend logs for CORS errors
+
+## Project Structure
+
+```
+MATCH MODULE/
+├── src/                    # Frontend React app
+├── rag-backend/            # Backend RAG API server
+│   ├── production-index-fallback.js  # Main server file
+│   └── production.env      # Backend environment variables
+└── package.json            # Frontend dependencies
+```
+
+## Important Files
+
+- **Backend Server**: `rag-backend/production-index-fallback.js`
+- **Backend Config**: `rag-backend/production.env`
+- **Frontend App**: `src/App.jsx`
+- **Firebase Config**: `src/firebase-config.js`
+
+## Backend Endpoints
+
+- Health Check: `http://localhost:3003/health`
+- Public API: `http://localhost:3003/smart-match-public` (POST)
+- Auth API: `http://localhost:3003/auth/login` (POST)
+
+## Frontend Ports
+
+- Default: `http://localhost:3000` (Vite)
+- Falls back to: 3001, 3004 if 3000 is busy
+
+## When Developing
+
+1. **Always check** if backend is running before starting frontend
+2. **Use two terminals** - one for backend, one for frontend (recommended)
+3. **Or use** `npm run start:all` to start both together
+4. **Backend must be running** for AI matching features to work
+
+## Installation Reminders
+
+If cloning fresh:
+1. `npm install` (install frontend deps)
+2. `cd rag-backend && npm install` (install backend deps)
+3. Configure `rag-backend/production.env` with Gemini API key
+4. Start backend first, then frontend
+
