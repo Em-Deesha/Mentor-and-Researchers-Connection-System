@@ -12,17 +12,17 @@ Complete guide to set up the RAG (Retrieval-Augmented Generation) backend with G
 ## 🚀 Step 1: Install Backend Dependencies
 
 1. **Navigate to Backend Directory**
-   ```bash
-   cd rag-backend
+```bash
+cd rag-backend
    ```
 
 2. **Install Dependencies**
    ```bash
-   npm install
-   ```
+npm install
+```
 
 3. **Verify Installation**
-   ```bash
+```bash
    npm list
    ```
 
@@ -45,7 +45,7 @@ Complete guide to set up the RAG (Retrieval-Augmented Generation) backend with G
 ## ⚙️ Step 3: Environment Configuration
 
 1. **Create Environment File**
-   ```bash
+```bash
    cd rag-backend
    touch .env
    ```
@@ -76,7 +76,7 @@ Complete guide to set up the RAG (Retrieval-Augmented Generation) backend with G
    ```
 
 3. **Generate JWT Secret**
-   ```bash
+```bash
    node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
    ```
 
@@ -130,8 +130,8 @@ rag-backend/
    curl http://localhost:3003/health
    ```
    Expected response:
-   ```json
-   {
+```json
+{
      "status": "OK",
      "timestamp": "2025-01-XX...",
      "uptime": "XX seconds"
