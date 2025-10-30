@@ -2249,6 +2249,7 @@ const ProfessorProfilePage = ({ db }) => {
           <ArrowLeft className="w-4 h-4 mr-1" /> Back to results
         </button>
         <div className="bg-white rounded-xl shadow-xl border border-gray-100 p-6 relative">
+        <div className="bg-white rounded-xl shadow-xl border border-gray-100 p-6">
           <div className="flex items-start gap-4 border-b pb-4">
             <div className="w-20 h-20 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-2xl font-semibold">
               {profile?.name?.[0] || 'P'}

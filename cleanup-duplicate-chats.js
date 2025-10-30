@@ -3,7 +3,7 @@ const { getFirestore, collection, getDocs, doc, deleteDoc, query, where } = requ
 
 // Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyCJhJhJhJhJhJhJhJhJhJhJhJhJhJhJhJh",
+  apiKey: "*****************",
   authDomain: "academic-matchmaker-12345.firebaseapp.com",
   projectId: "academic-matchmaker-12345",
   storageBucket: "academic-matchmaker-12345.appspot.com",
