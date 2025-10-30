@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Routes, Route, Link, useParams, useNavigate, useLocation } from 'react-router-dom';
+import ChatAssistant from './components/ChatAssistant/ChatAssistant.jsx';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion, getDocs, deleteDoc, orderBy, limit as limitFn } from 'firebase/firestore';
@@ -2247,7 +2248,7 @@ const ProfessorProfilePage = ({ db }) => {
         <button onClick={() => navigate(-1)} className="mb-4 inline-flex items-center text-sm text-gray-600 hover:text-gray-800">
           <ArrowLeft className="w-4 h-4 mr-1" /> Back to results
         </button>
-        <div className="bg-white rounded-xl shadow-xl border border-gray-100 p-6">
+        <div className="bg-white rounded-xl shadow-xl border border-gray-100 p-6 relative">
           <div className="flex items-start gap-4 border-b pb-4">
             <div className="w-20 h-20 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-2xl font-semibold">
               {profile?.name?.[0] || 'P'}
@@ -2389,6 +2390,14 @@ const ProfessorProfilePage = ({ db }) => {
           </div>
         </div>
       </div>
+      {/* Floating chat assistant for Professor public profile */}
+      {profile?.id && (
+        <ChatAssistant
+          profileId={profile.id}
+          profileType="professor"
+          context={{ name: profile?.name, title: profile?.title, university: profile?.university, researchArea: profile?.researchArea, bio: profile?.bio }}
+        />
+      )}
     </div>
   );
 };
@@ -4362,6 +4371,15 @@ const App = () => {
         {activeTab === 'chats' && renderChatsTab()}
         {activeTab === 'admin' && <AdminDashboard db={db} userId={userId} />}
       </main>
+
+      {/* Floating chat assistant for internal profile tab */}
+      {activeTab === 'profile' && userType && (
+        <ChatAssistant
+          profileId={userId}
+          profileType={userType}
+          context={{ name: profileData?.name, title: profileData?.title, university: profileData?.university, department: profileData?.department, researchArea: profileData?.researchArea, bio: profileData?.bio }}
+        />
+      )}
 
       <footer className="text-center mt-10 text-gray-500 text-sm">
         <p>Built using React, Tailwind CSS, and Google Firestore.</p>

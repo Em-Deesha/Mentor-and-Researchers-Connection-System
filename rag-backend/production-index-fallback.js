@@ -409,6 +409,75 @@ app.post('/smart-match-public', async (req, res) => {
   }
 });
 
+// Context-aware Chat Assistant endpoint
+app.post('/api/chat-assistant/query', async (req, res) => {
+  try {
+    const { profileId, profileType, query } = req.body || {};
+
+    if (!query || !profileType) {
+      return res.status(400).json({ error: 'Missing required fields: profileType, query' });
+    }
+
+    let profile = null;
+    if (profileType === 'professor') {
+      const list = await getProfessorsFromFirestore();
+      profile = (list || []).find(p => p.id === profileId || p.userId === profileId) || null;
+      if (!profile && profileId) {
+        profile = (list || []).find(p => (p.name || '').toLowerCase().includes(String(profileId).toLowerCase()));
+      }
+    } else if (profileType === 'student') {
+      const list = await getStudentsFromFirestore();
+      profile = (list || []).find(s => s.id === profileId || s.userId === profileId) || null;
+      if (!profile && profileId) {
+        profile = (list || []).find(s => (s.name || '').toLowerCase().includes(String(profileId).toLowerCase()));
+      }
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const profileSummary = profile ? {
+      name: profile.name,
+      title: profile.title || profile.degree || '',
+      university: profile.university || '',
+      department: profile.department || '',
+      researchArea: profile.researchArea || (Array.isArray(profile.interests) ? profile.interests.join(', ') : ''),
+      bio: profile.bio || '',
+      skills: profile.skills || [],
+      publications: profile.publications || []
+    } : null;
+
+    const systemPrompt = `You are an academic assistant. Answer the user's question using the provided profile context when available. Be concise and accurate.`;
+    const contextText = profileSummary ? `\nProfile Context (type: ${profileType}):\n${JSON.stringify(profileSummary, null, 2)}\n` : '\nProfile Context: unavailable\n';
+
+    const prompt = `${systemPrompt}\n${contextText}\nUser Question: ${query}\nAnswer:`;
+
+    let answer = 'No response generated.';
+    try {
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      answer = response.text();
+    } catch (llmErr) {
+      console.error('LLM generation error:', llmErr.message);
+      // Fallback heuristic
+      if (profileSummary) {
+        answer = `Based on the profile, here is a brief summary: ${profileSummary.bio || profileSummary.researchArea || 'Profile details available.'}`;
+      } else {
+        answer = 'Profile context not available. Please try again after selecting a valid profile.';
+      }
+    }
+
+    // CORS headers for local dev
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+    return res.json({ answer, profileFound: !!profile });
+  } catch (error) {
+    console.error('❌ Error in chat assistant:', error);
+    return res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
 // Authentication endpoints
 app.post('/auth/login', async (req, res) => {
   try {
