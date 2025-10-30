@@ -412,7 +412,7 @@ app.post('/smart-match-public', async (req, res) => {
 // Context-aware Chat Assistant endpoint
 app.post('/api/chat-assistant/query', async (req, res) => {
   try {
-    const { profileId, profileType, query } = req.body || {};
+    const { profileId, profileType, query, contextOverride, rawPageText } = req.body || {};
 
     if (!query || !profileType) {
       return res.status(400).json({ error: 'Missing required fields: profileType, query' });
@@ -434,27 +434,92 @@ app.post('/api/chat-assistant/query', async (req, res) => {
     }
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const profileSummary = profile ? {
-      name: profile.name,
-      title: profile.title || profile.degree || '',
-      university: profile.university || '',
-      department: profile.department || '',
-      researchArea: profile.researchArea || (Array.isArray(profile.interests) ? profile.interests.join(', ') : ''),
-      bio: profile.bio || '',
-      skills: profile.skills || [],
-      publications: profile.publications || []
-    } : null;
+    // Merge profile from Firestore with any client-provided context to ensure completeness
+    const merged = { ...(profile || {}), ...(contextOverride || {}) };
+    const profileSummary = {
+      name: merged.name,
+      title: merged.title || merged.degree || '',
+      university: merged.university || '',
+      department: merged.department || '',
+      researchArea: merged.researchArea || (Array.isArray(merged.interests) ? merged.interests.join(', ') : ''),
+      bio: merged.bio || '',
+      // include multiple potential fields for skills-like data
+      skills: Array.isArray(merged.skills) ? merged.skills : (
+        Array.isArray(merged.keywords) ? merged.keywords : (
+          typeof merged.keywords === 'string' ? merged.keywords.split(',').map(s => s.trim()) : []
+        )
+      ),
+      publications: merged.publications || [],
+      achievements: merged.achievements || merged.achievementsAndCertifications || merged.awards || [],
+      certifications: merged.certifications || [],
+      projects: merged.projects || []
+    };
 
-    const systemPrompt = `You are an academic assistant. Answer the user's question using the provided profile context when available. Be concise and accurate.`;
-    const contextText = profileSummary ? `\nProfile Context (type: ${profileType}):\n${JSON.stringify(profileSummary, null, 2)}\n` : '\nProfile Context: unavailable\n';
+    const systemPrompt = `You are an academic assistant. Use the profile context to answer precisely. If asked for skills, use skills, keywords, or interests from context.`;
+    const contextText = `\nProfile Context (type: ${profileType}):\n${JSON.stringify(profileSummary, null, 2)}\n`;
+    const pageText = rawPageText ? `\nFull Profile Page Text (truncated):\n"""\n${rawPageText}\n"""\n` : '';
 
-    const prompt = `${systemPrompt}\n${contextText}\nUser Question: ${query}\nAnswer:`;
+    // Add scope hint to constrain output strictly to requested field
+    const lowerQ = (query || '').toLowerCase();
+    let scopeHint = '';
+    if (lowerQ.includes('research area')) {
+      scopeHint = '\nRespond ONLY with a concise summary of research areas. Do NOT include skills, projects, achievements, publications, or other sections.';
+    } else if (lowerQ.includes('skill')) {
+      scopeHint = '\nRespond ONLY with a bullet list of skills.';
+    } else if (lowerQ.includes('project')) {
+      scopeHint = '\nRespond ONLY with projects aligned to the profile, no extra sections.';
+    } else if (lowerQ.includes('achievement') || lowerQ.includes('certification')) {
+      scopeHint = '\nRespond ONLY with achievements/certifications.';
+    } else if (lowerQ.includes('publication')) {
+      scopeHint = '\nRespond ONLY with publications.';
+    } else if (lowerQ.includes('experience') || lowerQ.includes('work history') || lowerQ.includes('role')) {
+      scopeHint = '\nRespond ONLY with experience: roles, affiliations, durations, and responsibilities. Do NOT include skills, projects, achievements, or publications.';
+    }
+
+    const prompt = `${systemPrompt}\n${contextText}${pageText}\nUser Question: ${query}${scopeHint}\nInstructions:\n- Use both the structured profile context and the profile page text.\n- When listing projects/achievements/skills/publications, extract directly from the page text if not present in structured context.\n- If still unavailable, state exactly which field was not found.`;
 
     let answer = 'No response generated.';
     try {
       const result = await model.generateContent(prompt);
       const response = await result.response;
-      answer = response.text();
+      let textOut = response.text();
+      // Sanitize markdown and bullets for cleaner UI
+      const sanitizeOutput = (s) => {
+        if (!s) return s;
+        let out = s.trim();
+        // Remove code fences
+        out = out.replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, ''));
+        // Remove bold markers **text** and stray * used for emphasis
+        out = out.replace(/\*\*(.*?)\*\*/g, '$1');
+        out = out.replace(/\*(.*?)\*/g, '$1');
+        // Normalize bullet lists: convert leading * or • to '-'
+        out = out.split(/\r?\n/).map(line => {
+          const trimmed = line.trimStart();
+          if (/^(?:\*|•)\s+/.test(trimmed)) {
+            return line.replace(/^(\s*)(?:\*|•)\s+/, '$1- ');
+          }
+          return line;
+        }).join('\n');
+        // Remove duplicated section headers if scope is restricted
+        if (lowerQ.includes('research area')) {
+          out = out.replace(/^(?:Research Areas?:\s*)/i, '');
+        }
+        return out.trim();
+      };
+      // Lightweight post-filter: remove unrelated sections for scoped queries
+      if (lowerQ.includes('research area')) {
+        textOut = textOut.replace(/\*\*Skills:[\s\S]*/i, '').replace(/\*\*Projects:[\s\S]*/i, '').replace(/\*\*Achievements:[\s\S]*/i, '').replace(/\*\*Publications:[\s\S]*/i, '').trim();
+      }
+      if (lowerQ.includes('experience') || lowerQ.includes('work history') || lowerQ.includes('role')) {
+        // Cut off any sections that often follow
+        textOut = textOut
+          .replace(/\n?Projects:[\s\S]*/i, '')
+          .replace(/\n?Achievements:[\s\S]*/i, '')
+          .replace(/\n?Skills:[\s\S]*/i, '')
+          .replace(/\n?Publications:[\s\S]*/i, '')
+          .trim();
+      }
+      answer = sanitizeOutput(textOut);
     } catch (llmErr) {
       console.error('LLM generation error:', llmErr.message);
       // Fallback heuristic

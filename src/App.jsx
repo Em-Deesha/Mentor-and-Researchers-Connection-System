@@ -2391,13 +2391,31 @@ const ProfessorProfilePage = ({ db }) => {
         </div>
       </div>
       {/* Floating chat assistant for Professor public profile */}
-      {profile?.id && (
-        <ChatAssistant
-          profileId={profile.id}
-          profileType="professor"
-          context={{ name: profile?.name, title: profile?.title, university: profile?.university, researchArea: profile?.researchArea, bio: profile?.bio }}
-        />
-      )}
+      {profile?.id && (() => {
+        const detectedType = profile?.userType || (profile?.degree ? 'student' : 'professor');
+        return (
+          <ChatAssistant
+            profileId={profile.id}
+            profileType={detectedType}
+            context={{
+              name: profile?.name,
+              title: profile?.title || profile?.degree,
+              university: profile?.university,
+              department: profile?.department,
+              researchArea: profile?.researchArea,
+              bio: profile?.bio,
+              skills: profile?.skills || profile?.keywords,
+              keywords: profile?.keywords,
+              interests: profile?.interests,
+              publications: profile?.publications,
+              projects: profile?.projects,
+              achievements: profile?.achievements || profile?.achievementsAndCertifications || profile?.awards,
+              certifications: profile?.certifications,
+              contact: { email: profile?.email, website: profile?.website }
+            }}
+          />
+        );
+      })()}
     </div>
   );
 };

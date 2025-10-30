@@ -6,6 +6,7 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 	const [input, setInput] = useState('');
 	const [isSending, setIsSending] = useState(false);
 	const panelRef = useRef(null);
+	const messagesEndRef = useRef(null);
 
 	useEffect(() => {
 		console.log('[ChatAssistant] mounted with', { profileId, profileType, context });
@@ -26,6 +27,25 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 		];
 	}, [profileType]);
 
+	const extractVisibleProfileText = () => {
+		try {
+			// Prefer centered containers commonly used in this app
+			const root = document.querySelector('.max-w-3xl') || document.querySelector('.max-w-6xl') || document.querySelector('main') || document.body;
+			if (!root) return '';
+			// Clone and strip script/style
+			const clone = root.cloneNode(true);
+			Array.from(clone.querySelectorAll('script,style,noscript')).forEach(n => n.remove());
+			// Get text and normalize whitespace
+			let text = clone.textContent || '';
+			text = text.replace(/\s+/g, ' ').trim();
+			// Cap size to keep payload reasonable
+			return text.slice(0, 8000);
+		} catch (e) {
+			console.warn('[ChatAssistant] extractVisibleProfileText failed', e);
+			return '';
+		}
+	};
+
 	const handleSend = async (text) => {
 		const query = (text || input).trim();
 		if (!query) return;
@@ -34,10 +54,11 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 		setMessages(prev => [...prev, userMsg]);
 		setInput('');
 		try {
+			const rawPageText = extractVisibleProfileText();
 			const resp = await fetch(`${import.meta.env.VITE_CHAT_ASSISTANT_API || 'http://localhost:3003'}/api/chat-assistant/query`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ profileId, profileType, query })
+				body: JSON.stringify({ profileId, profileType, query, contextOverride: context, rawPageText })
 			});
 			if (!resp.ok) {
 				throw new Error(`Request failed with status ${resp.status}`);
@@ -52,6 +73,13 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 			setIsSending(false);
 		}
 	};
+
+	// Auto-scroll messages to bottom when new messages arrive
+	useEffect(() => {
+		if (messagesEndRef.current) {
+			messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+		}
+	}, [messages, isOpen]);
 
 	useEffect(() => {
 		const handler = (e) => {
@@ -77,26 +105,21 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 			</button>
 
 			{/* Panel */}
-			<div className={`fixed bottom-24 right-6 z-40 w-[min(92vw,380px)] max-h-[70vh] bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all ${isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 pointer-events-none translate-y-4'}`} ref={panelRef}>
-				<div className="p-4 border-b border-gray-100 flex items-center justify-between">
-					<div>
-						<p className="text-sm font-semibold text-gray-900">Context-Aware Assistant</p>
-						<p className="text-xs text-gray-500">{profileType === 'student' ? 'Student profile context' : 'Professor profile context'}</p>
-					</div>
-					<button onClick={() => setIsOpen(false)} className="text-gray-400 hover:text-gray-600">
-						<span className="sr-only">Close</span>×
-					</button>
+			<div className={`fixed bottom-24 right-6 z-40 w-[min(92vw,440px)] max-h-[80vh] bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all ${isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 pointer-events-none translate-y-4'}`} ref={panelRef}>
+				<div className="p-3 border-b border-gray-100 flex items-center justify-between">
+					<div className="text-sm font-medium text-gray-900">Assistant</div>
+					<button onClick={() => setIsOpen(false)} className="text-gray-400 hover:text-gray-600">×</button>
 				</div>
-				<div className="p-3 flex gap-2 flex-wrap border-b border-gray-100">
+				<div className="p-2 pt-3 flex gap-2 flex-wrap border-b border-gray-100">
 					{suggestions.map((s) => (
 						<button key={s} onClick={() => handleSend(s)} className="text-xs px-3 py-1.5 rounded-full bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition">
 							{s}
 						</button>
 					))}
 				</div>
-				<div className="p-4 space-y-3 overflow-y-auto max-h-[44vh]">
+				<div className="px-3 py-2 space-y-3 overflow-y-auto" style={{ maxHeight: '56vh' }}>
 					{messages.length === 0 && (
-						<p className="text-xs text-gray-500">Ask anything about this {profileType}. I will use the profile context to answer.</p>
+						<p className="text-xs text-gray-500">Ask anything about this {profileType}.</p>
 					)}
 					{messages.map(m => (
 						<div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -105,14 +128,15 @@ const ChatAssistant = ({ profileId, profileType, context }) => {
 							</div>
 						</div>
 					))}
+					<div ref={messagesEndRef} />
 				</div>
-				<div className="p-3 border-t border-gray-100">
+				<div className="p-2 border-t border-gray-100">
 					<form onSubmit={(e) => { e.preventDefault(); if (!isSending) handleSend(); }} className="flex items-center gap-2">
 						<input
 							type="text"
 							value={input}
 							onChange={(e) => setInput(e.target.value)}
-							placeholder="Ask a question..."
+							placeholder={`Ask about this ${profileType}...`}
 							className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
 						/>
 						<button
