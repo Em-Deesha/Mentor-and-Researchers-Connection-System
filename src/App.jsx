@@ -1861,6 +1861,51 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
+  const [audience, setAudience] = useState('both'); // 'professors' | 'students' | 'both'
+
+  const runLocalFirestoreSearch = useCallback(async (term, who) => {
+    if (!db) return [];
+    const lc = term.toLowerCase();
+    const paths = [];
+    if (who === 'professors' || who === 'both') paths.push(`artifacts/${appId}/public/data/professors`);
+    if (who === 'students' || who === 'both') {
+      // prefer students collection; fall back to users where userType=='student'
+      paths.push(`artifacts/${appId}/public/data/students`);
+    }
+
+    const collectAll = async (path) => {
+      try {
+        const snap = await getDocs(collection(db, path));
+        return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch {
+        return [];
+      }
+    };
+
+    const all = (await Promise.all(paths.map(collectAll))).flat();
+    const enriched = all.map(item => {
+      const hay = [item.name, item.title, item.degree, item.university, item.department, item.researchArea, Array.isArray(item.keywords) ? item.keywords.join(' ') : item.keywords]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const matched = lc.split(/\s+/).filter(w => w && hay.includes(w));
+      const score = Math.min(0.99, matched.length / Math.max(1, lc.split(/\s+/).length));
+      return {
+        id: item.id,
+        name: item.name || 'Unknown',
+        title: item.title || item.degree || '',
+        university: item.university || '',
+        researchArea: item.researchArea || (Array.isArray(item.keywords) ? item.keywords.join(', ') : (item.keywords || '')),
+        role: item.userType || (item.degree ? 'student' : 'professor'),
+        justification: 'Matches your search for data based on research interests and academic profile.',
+        similarityScore: score,
+      };
+    }).filter(r => r.similarityScore > 0 || lc.length === 0);
+
+    // sort by score desc
+    enriched.sort((a, b) => b.similarityScore - a.similarityScore);
+    return enriched;
+  }, [db]);
 
   // Production RAG Smart Search Handler with Authentication
   const handleSearch = async (e) => {
@@ -1893,43 +1938,10 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
-      // Call production RAG backend API with timeout and proper CORS handling
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({ 
-          query: term,
-          userType: userType || 'student' // Pass userType to backend
-        }),
-        signal: controller.signal,
-        mode: 'cors', // Explicitly enable CORS
-        credentials: 'omit' // Don't send credentials for CORS simplicity
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `Backend returned error: ${response.status} ${response.statusText}`;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error || errorJson.details || errorMessage;
-        } catch (e) {
-          // If not JSON, use text as-is
-          errorMessage = errorText || errorMessage;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const results = await response.json();
-      console.log('📊 Production RAG results with Gemini:', results);
-      
+      // Prefer Firestore audience-aware search for deterministic filtering
+      const results = await runLocalFirestoreSearch(term, audience);
       setSearchResults(results);
-      setError(''); // Clear any previous errors
-      setLastSearchCount(Array.isArray(results) ? results.length : 0);
+      setError('');
 
       // Log search activity for dashboard
       try {
@@ -1977,21 +1989,25 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
           <Zap className="w-6 h-6 mr-2" /> Academic Matchmaker
         </h3>
         </div>
-        <p className="text-gray-600 mb-4">
-          {userType === 'professor' 
-            ? "Find talented students using AI-powered smart matching. Describe what kind of students you're looking for (e.g., 'machine learning students interested in healthcare' or 'PhD students working on cancer research')."
-            : "Find collaborators using AI-powered smart matching. Describe your research interests naturally (e.g., 'I'm interested in quantum machine learning applications' or 'I work on CRISPR gene editing for cancer therapy')."
-          }
+        <p className="text-gray-600 mb-3">
+          {audience === 'students' && userType !== 'student' && 'Find talented students to collaborate or supervise.'}
+          {audience === 'professors' && 'Find professors or supervisors to collaborate with.'}
+          {audience === 'both' && 'Search across professors and students to find the best collaborators.'}
         </p>
+        <div className="flex items-center gap-3 mb-3">
+          <label className="text-sm text-gray-600">I want to find:</label>
+          <select value={audience} onChange={(e) => setAudience(e.target.value)} className="border rounded-lg p-2 text-sm">
+            <option value="both">Professors and Students</option>
+            <option value="professors">Professors only</option>
+            <option value="students">Students only</option>
+          </select>
+        </div>
         <form onSubmit={handleSearch} className="flex space-x-2">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={userType === 'professor' 
-              ? "Describe what kind of students you're looking for (e.g., 'machine learning students interested in healthcare')..."
-              : "Describe your research interests (e.g., 'quantum machine learning for drug discovery')..."
-            }
+            placeholder={audience === 'students' ? "Describe what kind of students you're looking for (e.g., 'ML students for healthcare')..." : audience === 'professors' ? "Describe the kind of professors you seek (e.g., 'NLP professor for RAG')..." : "Describe your interests (we'll search professors and students)..."}
             className="flex-1 rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500 transition duration-150"
             disabled={isSearching}
           />
@@ -2041,7 +2057,7 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
                 </div>
                 <p className="text-md text-indigo-600 mb-2">{match.title} at {match.university}</p>
                 <p className="text-sm text-gray-600 mb-3">
-                  <strong>{userType === 'professor' ? 'Student Research Area:' : 'Research Area:'}</strong> {match.researchArea}
+                  <strong>Research Area:</strong> {match.researchArea}
                 </p>
                 
                 {/* Smart Justification */}
