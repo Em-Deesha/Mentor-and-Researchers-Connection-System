@@ -63,10 +63,10 @@ Complete guide to set up Firebase for the Academic Matchmaker application.
    - Go to "Firestore Database" → "Rules" tab
 
 2. **Update Security Rules**
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
+   ```javascript
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
        // Allow authenticated users to read/write their own data
        match /artifacts/{appId}/public/data/{collection}/{document} {
          allow read, write: if request.auth != null;
@@ -86,17 +86,17 @@ service cloud.firestore {
        
        // Allow users to manage their own messages
        match /artifacts/{appId}/public/data/chats/{chatId}/messages/{messageId} {
-      allow read, write: if request.auth != null;
-    }
+         allow read, write: if request.auth != null;
+       }
        
        // Allow users to manage their own notifications
        match /artifacts/{appId}/public/data/notifications/{notificationId} {
          allow read, write: if request.auth != null && 
            request.auth.uid == resource.data.recipientId;
        }
-  }
-}
-```
+     }
+   }
+   ```
 
 3. **Publish Rules**
    - Click "Publish" to apply the rules
@@ -163,10 +163,10 @@ service cloud.firestore {
 
 4. **Update Your Environment Variables**
    - Create `.env` file in your project root:
-```env
+   ```env
    VITE_FIREBASE_API_KEY=your-api-key
    VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your-project-id
+   VITE_FIREBASE_PROJECT_ID=your-project-id
    VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
    VITE_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
    VITE_FIREBASE_APP_ID=your-app-id
@@ -176,12 +176,12 @@ VITE_FIREBASE_PROJECT_ID=your-project-id
 
 1. **Create Initial Collections**
    Your Firestore will have this structure:
-```
-artifacts/
+   ```
+   artifacts/
    └── {appId}/
-    └── public/
-        └── data/
-            ├── users/           # User profiles
+       └── public/
+           └── data/
+               ├── users/           # User profiles
                ├── professors/      # Professor profiles
                ├── students/        # Student profiles
                ├── posts/           # Global feed posts

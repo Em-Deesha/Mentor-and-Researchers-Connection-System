@@ -4,7 +4,7 @@ import { getFirestore, collection, getDocs, query, where, connectFirestoreEmulat
 
 // Firebase configuration (same as frontend)
 const firebaseConfig = {
-  apiKey: "******************",
+  apiKey: "AIzaSyBXdC23TpcXdS2FCrwejDHkmbcQafmBq50",
   authDomain: "academic-matchmaker-prod.firebaseapp.com",
   projectId: "academic-matchmaker-prod",
   storageBucket: "academic-matchmaker-prod.firebasestorage.app",
