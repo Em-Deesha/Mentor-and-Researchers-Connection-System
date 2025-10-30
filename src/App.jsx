@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Routes, Route, Link, useParams, useNavigate, useLocation } from 'react-router-dom';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion, getDocs, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion, getDocs, deleteDoc, orderBy, limit as limitFn } from 'firebase/firestore';
 import { User, GraduationCap, Globe, BookOpen, Send, Loader2, LogOut, CheckCheck, MessageSquare, Heart, Edit2, Clock, Search, Zap, XCircle, Bell, BellRing, Users, ArrowLeft } from 'lucide-react';
 
 // --- Import Firebase Configuration ---
@@ -1928,6 +1929,21 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
       
       setSearchResults(results);
       setError(''); // Clear any previous errors
+      setLastSearchCount(Array.isArray(results) ? results.length : 0);
+
+      // Log search activity for dashboard
+      try {
+        if (db && userId) {
+          await addDoc(collection(db, `artifacts/${appId}/public/data/users/${userId}/activity`), {
+            type: 'search',
+            query: term,
+            resultCount: Array.isArray(results) ? results.length : 0,
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch (logErr) {
+        console.warn('Failed to log search activity', logErr);
+      }
       
       if (results.length === 0) {
         setError(`No smart matches found for "${term}". Try different research interests or keywords.`);
@@ -1998,7 +2014,22 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
             <div className="flex justify-between items-start mb-4">
               <div className="flex-1">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-bold text-xl text-gray-900">{match.name}</h3>
+                  <h3 className="font-bold text-xl text-gray-900">
+                    <Link to={`/profile/${match.id}`} state={{ match }} onClick={async () => {
+                      try {
+                        if (db && userId) {
+                          await addDoc(collection(db, `artifacts/${appId}/public/data/users/${userId}/activity`), {
+                            type: 'profile_view',
+                            profileId: match.id,
+                            name: match.name,
+                            createdAt: serverTimestamp(),
+                          });
+                        }
+                      } catch {}
+                    }} className="text-indigo-700 hover:underline">
+                      {match.name}
+                    </Link>
+                  </h3>
                   <div className="flex items-center space-x-2">
                     <span className="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2 py-1 rounded-full">
                       Match #{index + 1}
@@ -2024,7 +2055,26 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
               </div>
             </div>
             
-            <div className="flex justify-end pt-3 border-t">
+            <div className="flex justify-end pt-3 border-t gap-2">
+              <Link
+                to={`/profile/${match.id}`}
+                state={{ match }}
+                onClick={async () => {
+                  try {
+                    if (db && userId) {
+                      await addDoc(collection(db, `artifacts/${appId}/public/data/users/${userId}/activity`), {
+                        type: 'profile_view',
+                        profileId: match.id,
+                        name: match.name,
+                        createdAt: serverTimestamp(),
+                      });
+                    }
+                  } catch {}
+                }}
+                className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md"
+              >
+                View Profile
+              </Link>
               <button
                 onClick={() => onStartConversation && onStartConversation({ userId: match.id, name: match.name })}
                 className="flex items-center px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition duration-150 shadow-md transform hover:scale-[1.05]"
@@ -2041,6 +2091,287 @@ const Matchmaker = ({ db, userId, userName, userType, onStartConversation }) => 
               <p className="text-sm mt-2">Try different keywords or research areas.</p>
             </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// --- Public Professor Profile Page ---
+const ProfessorProfilePage = ({ db }) => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        if (!db || !id) return;
+        // 1) Try direct doc id
+        const directRef = doc(db, `artifacts/${appId}/public/data/professors`, id);
+        const directSnap = await getDoc(directRef);
+        if (directSnap.exists()) {
+          setProfile({ id: directSnap.id, ...directSnap.data() });
+          return;
+        }
+
+        // 1b) Try users and students collections with same id
+        const userIdRef = doc(db, `artifacts/${appId}/public/data/users`, id);
+        const userIdSnap = await getDoc(userIdRef);
+        if (userIdSnap.exists()) {
+          setProfile({ id: userIdSnap.id, ...userIdSnap.data() });
+          return;
+        }
+        const studentIdRef = doc(db, `artifacts/${appId}/public/data/students`, id);
+        const studentIdSnap = await getDoc(studentIdRef);
+        if (studentIdSnap.exists()) {
+          setProfile({ id: studentIdSnap.id, ...studentIdSnap.data() });
+          return;
+        }
+
+        // 2) Try by exact name if available from router state
+        const stateMatch = location.state?.match;
+        if (stateMatch?.name) {
+          const qRef = collection(db, `artifacts/${appId}/public/data/professors`);
+          const nameQuery = query(qRef, where('name', '==', stateMatch.name));
+          const nameSnap = await getDocs(nameQuery);
+          if (!nameSnap.empty) {
+            const docSnap = nameSnap.docs[0];
+            setProfile({ id: docSnap.id, ...docSnap.data() });
+            return;
+          }
+          // also try users and students by name
+          const usersRef = collection(db, `artifacts/${appId}/public/data/users`);
+          const usersQ = query(usersRef, where('name', '==', stateMatch.name));
+          const usersSnap = await getDocs(usersQ);
+          if (!usersSnap.empty) {
+            const docSnap = usersSnap.docs[0];
+            setProfile({ id: docSnap.id, ...docSnap.data() });
+            return;
+          }
+          const studentsRef = collection(db, `artifacts/${appId}/public/data/students`);
+          const studentsQ = query(studentsRef, where('name', '==', stateMatch.name));
+          const studentsSnap = await getDocs(studentsQ);
+          if (!studentsSnap.empty) {
+            const docSnap = studentsSnap.docs[0];
+            setProfile({ id: docSnap.id, ...docSnap.data() });
+            return;
+          }
+        }
+
+        // 3) Try slug-to-name fallback (dr_alina_mehta -> Dr. Alina Mehta)
+        const slugToName = id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        const qRef2 = collection(db, `artifacts/${appId}/public/data/professors`);
+        const nameQuery2 = query(qRef2, where('name', '==', slugToName));
+        const nameSnap2 = await getDocs(nameQuery2);
+        if (!nameSnap2.empty) {
+          const docSnap = nameSnap2.docs[0];
+          setProfile({ id: docSnap.id, ...docSnap.data() });
+          return;
+        }
+        const usersRef2 = collection(db, `artifacts/${appId}/public/data/users`);
+        const usersQ2 = query(usersRef2, where('name', '==', slugToName));
+        const usersSnap2 = await getDocs(usersQ2);
+        if (!usersSnap2.empty) {
+          const docSnap = usersSnap2.docs[0];
+          setProfile({ id: docSnap.id, ...docSnap.data() });
+          return;
+        }
+        const studentsRef2 = collection(db, `artifacts/${appId}/public/data/students`);
+        const studentsQ2 = query(studentsRef2, where('name', '==', slugToName));
+        const studentsSnap2 = await getDocs(studentsQ2);
+        if (!studentsSnap2.empty) {
+          const docSnap = studentsSnap2.docs[0];
+          setProfile({ id: docSnap.id, ...docSnap.data() });
+          return;
+        }
+
+        // As a last resort, if router state has match data, show that
+        if (stateMatch) {
+          setProfile({ ...stateMatch, fromStateOnly: true });
+          setError('');
+          return;
+        }
+
+        setError('Profile not found');
+      } catch (e) {
+        setError(e.message || 'Failed to load profile');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchProfile();
+  }, [db, id, location.state]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <Loader2 className="animate-spin h-8 w-8 text-indigo-500 mr-3" />
+        <p className="text-lg text-gray-700">Loading profile...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-3xl mx-auto bg-white rounded-xl shadow p-6">
+          <p className="text-red-600">{error}</p>
+          <button onClick={() => navigate(-1)} className="mt-4 px-4 py-2 bg-gray-600 text-white rounded-lg">Back</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-3xl mx-auto">
+        <button onClick={() => navigate(-1)} className="mb-4 inline-flex items-center text-sm text-gray-600 hover:text-gray-800">
+          <ArrowLeft className="w-4 h-4 mr-1" /> Back to results
+        </button>
+        <div className="bg-white rounded-xl shadow-xl border border-gray-100 p-6">
+          <div className="flex items-start gap-4 border-b pb-4">
+            <div className="w-20 h-20 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-2xl font-semibold">
+              {profile?.name?.[0] || 'P'}
+            </div>
+            <div className="flex-1">
+              <h1 className="text-2xl font-bold text-gray-900">{profile?.name}</h1>
+              <p className="text-indigo-700">{profile?.title}</p>
+              <p className="text-gray-600">{profile?.university}</p>
+              {profile?.fromStateOnly && (
+                <p className="text-xs text-amber-600 mt-1">Showing AI match details. Not yet verified from database.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-6">
+            <div className="bg-gray-50 rounded-lg p-4">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2">Primary Research Area</h2>
+              <p className="text-gray-800">{profile?.researchArea || '—'}</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2">Keywords for Matching</h2>
+              <div className="flex flex-wrap gap-2">
+                {(Array.isArray(profile?.keywords) ? profile.keywords : (profile?.keywords ? String(profile.keywords).split(',').map(s => s.trim()).filter(Boolean) : [])).map((k, i) => (
+                  <span key={i} className="px-2 py-1 text-xs rounded-full bg-indigo-100 text-indigo-800">{k}</span>
+                ))}
+                {(!profile?.keywords || (Array.isArray(profile.keywords) ? profile.keywords.length === 0 : String(profile.keywords).trim().length === 0)) && <span className="text-gray-500">—</span>}
+              </div>
+            </div>
+            {profile?.bio && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">About / Bio</h2>
+                <p className="text-gray-800 whitespace-pre-wrap">{profile.bio}</p>
+              </div>
+            )}
+
+            {/* Education */}
+            {(profile?.degree || profile?.eduInstitution) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Education</h2>
+                <div className="space-y-1 text-gray-800">
+                  <div className="font-medium">{profile.degree}</div>
+                  <div>{profile.eduInstitution}</div>
+                  <div className="text-sm text-gray-600">
+                    {profile.eduStartDate || '—'} {profile.eduEndDate ? `→ ${profile.eduEndDate}` : ''}
+                    {profile.gpa ? ` • GPA: ${profile.gpa}` : ''}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Experience */}
+            {(profile?.expTitle || profile?.expOrganization) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Experience</h2>
+                <div className="space-y-1 text-gray-800">
+                  <div className="font-medium">{profile.expTitle}</div>
+                  <div>{profile.expOrganization}</div>
+                  <div className="text-sm text-gray-600">{profile.expStartDate || '—'} {profile.expEndDate ? `→ ${profile.expEndDate}` : ''}</div>
+                  {profile.expDescription && <p className="text-gray-800 mt-1">{profile.expDescription}</p>}
+                </div>
+              </div>
+            )}
+
+            {/* Publications */}
+            {(profile?.pubTitle || profile?.pubJournal) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Publications & Research</h2>
+                <div className="space-y-1 text-gray-800">
+                  <div className="font-medium">{profile.pubTitle} {profile.pubYear && <span className="text-sm text-gray-600">({profile.pubYear})</span>}</div>
+                  {profile.pubAuthors && <div className="text-sm text-gray-700">{profile.pubAuthors}</div>}
+                  {profile.pubJournal && <div className="text-sm text-gray-700">{profile.pubJournal}</div>}
+                  {profile.pubLink && (
+                    <a href={profile.pubLink} target="_blank" rel="noreferrer" className="text-indigo-700 text-sm hover:underline">View Publication</a>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Skills */}
+            {(profile?.keywords && (Array.isArray(profile.keywords) ? profile.keywords.length > 0 : String(profile.keywords).length > 0)) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Skills</h2>
+                <div className="flex flex-wrap gap-2">
+                  {(Array.isArray(profile.keywords) ? profile.keywords : String(profile.keywords).split(',')).map((k, i) => (
+                    <span key={`skill-${i}`} className="px-2 py-1 text-xs rounded-full bg-gray-200 text-gray-800">{typeof k === 'string' ? k.trim() : k}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Projects */}
+            {(profile?.projTitle || profile?.projDescription) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Projects</h2>
+                <div className="space-y-1 text-gray-800">
+                  <div className="font-medium">{profile.projTitle}</div>
+                  {profile.projRole && <div className="text-sm text-gray-700">Role: {profile.projRole}</div>}
+                  <div className="text-sm text-gray-600">{profile.projStartDate || '—'} {profile.projEndDate ? `→ ${profile.projEndDate}` : ''}</div>
+                  {profile.projDescription && <p className="text-gray-800 mt-1">{profile.projDescription}</p>}
+                  {profile.projLink && (
+                    <a href={profile.projLink} target="_blank" rel="noreferrer" className="text-indigo-700 text-sm hover:underline">View Project</a>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Achievements */}
+            {(profile?.achTitle || profile?.achYear) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Achievements & Certifications</h2>
+                <div className="space-y-1 text-gray-800">
+                  <div className="font-medium">{profile.achTitle} {profile.achYear && <span className="text-sm text-gray-600">({profile.achYear})</span>}</div>
+                  {profile.achDescription && <p className="text-gray-800 mt-1">{profile.achDescription}</p>}
+                </div>
+              </div>
+            )}
+            {(profile?.papers || profile?.projects) && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Research Papers / Projects</h2>
+                <ul className="list-disc pl-5 text-gray-800 space-y-1">
+                  {(profile.papers || []).map((p, i) => <li key={`p-${i}`}>{p}</li>)}
+                  {(profile.projects || []).map((p, i) => <li key={`pr-${i}`}>{p}</li>)}
+                </ul>
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Contact</h2>
+                <p className="text-gray-800">{profile?.email || '—'}</p>
+                {profile?.website && (
+                  <a className="text-indigo-700 text-sm hover:underline" href={profile.website} target="_blank" rel="noreferrer">Website</a>
+                )}
+              </div>
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gray-700 mb-2">Verification</h2>
+                <p className="text-gray-800">{profile?.isActive ? 'Verified/Active' : 'Unverified'}</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2524,6 +2855,9 @@ const App = () => {
   const [message, setMessage] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard'); // Default to dashboard tab
   const [activeProfileTab, setActiveProfileTab] = useState('overview'); // Profile tabs: overview, education, experience, publications, skills, projects, achievements, contact
+  const [recentActivities, setRecentActivities] = useState([]);
+  const [activeChatsCount, setActiveChatsCount] = useState(0);
+  const [lastSearchCount, setLastSearchCount] = useState(0);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
@@ -2692,6 +3026,30 @@ const App = () => {
       fetchProfile(userId);
     }
   }, [isAuthReady, userId, fetchProfile]);
+
+  // 2b. Subscribe to recent activities and chats for dashboard
+  useEffect(() => {
+    if (!db || !userId) return;
+    const actRef = collection(db, `artifacts/${appId}/public/data/users/${userId}/activity`);
+    const actQuery = query(actRef, orderBy('createdAt', 'desc'), limitFn(5));
+    const unsubAct = onSnapshot(actQuery, (snap) => {
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setRecentActivities(items);
+      const latestSearch = items.find(i => i.type === 'search' && typeof i.resultCount === 'number');
+      if (latestSearch) setLastSearchCount(latestSearch.resultCount);
+    });
+
+    const chatsRef = collection(db, `artifacts/${appId}/public/data/chats`);
+    const chatsQuery = query(chatsRef, where('participants', 'array-contains', userId));
+    const unsubChats = onSnapshot(chatsQuery, (snap) => {
+      setActiveChatsCount(snap.size || 0);
+    });
+
+    return () => {
+      unsubAct();
+      unsubChats();
+    };
+  }, [db, userId]);
 
   // --- HANDLERS ---
 
@@ -3321,7 +3679,7 @@ const App = () => {
             </div>
             <div className="ml-3">
               <p className="text-sm font-medium text-gray-500">Smart Matches</p>
-              <p className="text-lg font-semibold text-gray-900">12</p>
+              <p className="text-lg font-semibold text-gray-900">{lastSearchCount}</p>
             </div>
           </div>
         </div>
@@ -3333,7 +3691,7 @@ const App = () => {
             </div>
             <div className="ml-3">
               <p className="text-sm font-medium text-gray-500">Active Chats</p>
-              <p className="text-lg font-semibold text-gray-900">5</p>
+              <p className="text-lg font-semibold text-gray-900">{activeChatsCount}</p>
             </div>
           </div>
         </div>
@@ -3366,26 +3724,56 @@ const App = () => {
       {/* Recent Activity */}
       <div className="grid md:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Matches</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h3>
           <div className="space-y-3">
-            <div className="flex items-center p-3 bg-gray-50 rounded-lg">
-              <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
-                <User className="w-5 h-5 text-indigo-600" />
-              </div>
-              <div className="ml-3">
-                <p className="font-medium text-gray-900">Dr. Sarah Chen</p>
-                <p className="text-sm text-gray-500">Stanford University • 95% match</p>
-              </div>
-            </div>
-            <div className="flex items-center p-3 bg-gray-50 rounded-lg">
-              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                <User className="w-5 h-5 text-green-600" />
-              </div>
-              <div className="ml-3">
-                <p className="font-medium text-gray-900">Dr. Michael Rodriguez</p>
-                <p className="text-sm text-gray-500">MIT • 87% match</p>
-              </div>
-            </div>
+            {recentActivities.length === 0 && (
+              <p className="text-sm text-gray-500">No recent activity yet.</p>
+            )}
+            {recentActivities.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  if (item.type === 'profile_view' && item.profileId) {
+                    window.location.href = `/profile/${item.profileId}`;
+                  } else if (item.type === 'chat_start' && item.partnerId) {
+                    setPendingConversation({ userId: item.partnerId, name: item.name || 'Contact' });
+                    setActiveTab('chats');
+                  } else if (item.type === 'search') {
+                    setActiveTab('matchmaker');
+                    // best-effort set search term for user to re-run
+                    if (item.query) {
+                      // This depends on Matchmaker state; user can hit Search
+                      // We cannot programmatically submit here cleanly.
+                    }
+                  }
+                }}
+                className="w-full text-left flex items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100"
+              >
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center ${item.type === 'search' ? 'bg-blue-100' : item.type === 'chat_start' ? 'bg-green-100' : 'bg-indigo-100'}`}>
+                  {item.type === 'search' ? <Search className="w-5 h-5 text-blue-600" /> : item.type === 'chat_start' ? <MessageSquare className="w-5 h-5 text-green-600" /> : <User className="w-5 h-5 text-indigo-600" />}
+                </div>
+                <div className="ml-3">
+                  {item.type === 'search' && (
+                    <>
+                      <p className="font-medium text-gray-900">Searched: "{item.query}"</p>
+                      <p className="text-sm text-gray-500">{item.resultCount || 0} matches • {item.createdAt ? formatTimestamp(item.createdAt) : ''}</p>
+                    </>
+                  )}
+                  {item.type === 'profile_view' && (
+                    <>
+                      <p className="font-medium text-gray-900">Viewed profile: {item.name || item.profileId}</p>
+                      <p className="text-sm text-gray-500">{item.createdAt ? formatTimestamp(item.createdAt) : ''}</p>
+                    </>
+                  )}
+                  {item.type === 'chat_start' && (
+                    <>
+                      <p className="font-medium text-gray-900">Started chat with {item.name || item.partnerId}</p>
+                      <p className="text-sm text-gray-500">{item.createdAt ? formatTimestamp(item.createdAt) : ''}</p>
+                    </>
+                  )}
+                </div>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -3819,6 +4207,17 @@ const App = () => {
             } else {
               console.log('✅ Chat already exists:', chatId, 'with participants:', participants);
             }
+
+            // Log activity for dashboard
+            try {
+              await addDoc(collection(db, `artifacts/${appId}/public/data/users/${userId}/activity`), {
+                type: 'chat_start',
+                chatId,
+                partnerId: partner.userId,
+                name: partner.name,
+                createdAt: serverTimestamp(),
+              });
+            } catch {}
           } catch (error) {
             console.error('Error creating chat:', error);
           }
@@ -3866,7 +4265,7 @@ const App = () => {
     return renderOnboarding();
   }
 
-  return (
+  const mainAppElement = (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8 font-inter">
       <script src="https://cdn.tailwindcss.com"></script>
       <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 bg-white shadow-lg rounded-xl mb-6 sticky top-4 z-10">
@@ -3952,6 +4351,13 @@ const App = () => {
         <p>Built using React, Tailwind CSS, and Google Firestore.</p>
       </footer>
     </div>
+  );
+
+  return (
+    <Routes>
+      <Route path="/" element={mainAppElement} />
+      <Route path="/profile/:id" element={<ProfessorProfilePage db={db} />} />
+    </Routes>
   );
 };
 
