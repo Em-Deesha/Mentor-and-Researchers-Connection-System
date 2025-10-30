@@ -17,6 +17,7 @@ A comprehensive platform that connects students with professors using AI-powered
 - **Intelligent Matching**: Find professors based on research area compatibility
 - **Detailed Justifications**: AI explains why each match is relevant
 - **Similarity Scoring**: Provides match confidence percentages
+ - **Audience Filter (New)**: Search Professors, Students, or Both
 
 ### 💬 Real-Time Chat System
 - **WhatsApp-like Interface**: Modern chat UI with sidebar and main chat area
@@ -172,6 +173,27 @@ npm run start:all
 ```
 
 This starts both backend and frontend in a single command.
+
+### New Feature Highlights (Oct 2025)
+
+- Audience filter in Matchmaker to search Professors only, Students only, or Both
+- Public profile route `/profile/:id` (click a name or View Profile)
+- Dashboard shows real Recent Activity (searches, profile views, chat starts) and active chat count
+- Matchmaker restores your last results when returning from a profile
+
+### Matchmaker – How it works now
+
+1. Select "I want to find": Professors and Students | Professors only | Students only
+2. Enter your query and Search
+3. Click a result to open `/profile/:id`, or Start Conversation
+4. Activity appears on Dashboard
+
+Firestore collections used for audience-aware search:
+
+- Professors: `artifacts/${appId}/public/data/professors`
+- Students: `artifacts/${appId}/public/data/students`
+
+Fields considered: name, title/degree, university, department, researchArea, keywords.
 
 ### ⚠️ Common Error: "Backend server is not responding"
 
